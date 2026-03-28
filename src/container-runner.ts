@@ -40,6 +40,7 @@ export interface ContainerInput {
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
+  mainChatJid?: string;
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;

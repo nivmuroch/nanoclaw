@@ -170,6 +170,10 @@ async function runTask(
   };
 
   try {
+    const mainChatJid = isMain
+      ? task.chat_jid
+      : Object.entries(groups).find(([, g]) => g.isMain)?.[0];
+
     const output = await runContainerAgent(
       group,
       {
@@ -178,6 +182,7 @@ async function runTask(
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
         isMain,
+        mainChatJid,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
         script: task.script || undefined,

@@ -29,6 +29,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  mainChatJid?: string;
 }
 
 interface ContainerOutput {
@@ -423,6 +424,7 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            ...(containerInput.mainChatJid ? { NANOCLAW_MAIN_JID: containerInput.mainChatJid } : {}),
           },
         },
       },

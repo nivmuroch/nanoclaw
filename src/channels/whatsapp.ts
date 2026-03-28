@@ -2,9 +2,12 @@ import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  WAMessageContent,
+  WAMessageKey,
   WASocket,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
@@ -39,6 +42,22 @@ export class WhatsAppChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private groupSyncTimerStarted = false;
+  // Keeps recent outbound messages so Baileys can honor phone retry requests.
+  // Without this, decryption failures on the phone result in permanent
+  // "Waiting for this message" bubbles.
+  private msgStore = new Map<string, WAMessageContent>();
+  // Declared at class level so it persists across internal reconnects.
+  // If it were created inside connectInternal, it would reset on reconnect
+  // and the retry counter loop would restart, hammering the phone with bad retries.
+  private msgRetryCounterCache = (() => {
+    const store = new Map<string, unknown>();
+    return {
+      get<T>(key: string): T | undefined { return store.get(key) as T | undefined; },
+      set<T>(key: string, value: T): void { store.set(key, value); },
+      del(key: string): void { store.delete(key); },
+      flushAll(): void { store.clear(); },
+    };
+  })();
 
   private opts: WhatsAppChannelOpts;
 
@@ -56,21 +75,53 @@ export class WhatsAppChannel implements Channel {
     const authDir = path.join(STORE_DIR, 'auth');
     fs.mkdirSync(authDir, { recursive: true });
 
+    // Clear stale signal sessions on every fresh connect (not on internal reconnects).
+    // Sessions become invalid after restarts — clearing them forces a clean PreKey
+    // exchange on the first message, which prevents "Waiting for this message" on the phone.
+    // Keep creds.json — that's the device registration, not session state.
+    if (onFirstOpen) {
+      const staleFiles = fs.readdirSync(authDir).filter(f =>
+        f.startsWith('session-') ||
+        f.startsWith('sender-key-') ||
+        f.startsWith('app-state-sync-key-'),
+      );
+      for (const f of staleFiles) {
+        fs.rmSync(path.join(authDir, f));
+      }
+      if (staleFiles.length > 0) {
+        logger.info({ count: staleFiles.length }, 'Cleared stale signal sessions on startup');
+      }
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
     const { version } = await fetchLatestWaWebVersion({}).catch((err) => {
       logger.warn({ err }, 'Failed to fetch latest WA Web version, using default');
       return { version: undefined };
     });
+    const baileysSafeLogger = Object.assign(Object.create(logger as any), {
+      level: 'silent',
+      child: () => baileysSafeLogger,
+      trace: () => {},
+    });
     this.sock = makeWASocket({
       version,
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: makeCacheableSignalKeyStore(state.keys, baileysSafeLogger),
       },
       printQRInTerminal: false,
-      logger,
+      logger: baileysSafeLogger,
       browser: Browsers.macOS('Chrome'),
+      msgRetryCounterCache: this.msgRetryCounterCache,
+      getMessage: async (key: WAMessageKey): Promise<WAMessageContent | undefined> => {
+        if (key.id) return this.msgStore.get(key.id);
+        return undefined;
+      },
+      patchMessageBeforeSending: async (msg) => {
+        await this.sock.uploadPreKeysToServerIfRequired();
+        return msg;
+      },
     });
 
     this.sock.ev.on('connection.update', (update) => {
@@ -244,7 +295,14 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      await this.sock.sendMessage(jid, { text: prefixed });
+      const result = await this.sock.sendMessage(jid, { text: prefixed });
+      if (result?.key.id && result.message) {
+        this.msgStore.set(result.key.id, result.message);
+        // Keep store bounded to last 500 messages
+        if (this.msgStore.size > 500) {
+          this.msgStore.delete(this.msgStore.keys().next().value!);
+        }
+      }
       logger.info({ jid, length: prefixed.length }, 'Message sent');
     } catch (err) {
       // If send fails, queue it for retry on reconnect
@@ -325,7 +383,8 @@ export class WhatsAppChannel implements Channel {
 
     // Query Baileys' signal repository for the mapping
     try {
-      const pn = await this.sock.signalRepository?.lidMapping?.getPNForLID(jid);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pn = await (this.sock.signalRepository as any)?.lidMapping?.getPNForLID(jid);
       if (pn) {
         const phoneJid = `${pn.split('@')[0].split(':')[0]}@s.whatsapp.net`;
         this.lidToPhoneMap[lidUser] = phoneJid;
@@ -347,7 +406,13 @@ export class WhatsAppChannel implements Channel {
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         // Send directly — queued items are already prefixed by sendMessage
-        await this.sock.sendMessage(item.jid, { text: item.text });
+        const result = await this.sock.sendMessage(item.jid, { text: item.text });
+        if (result?.key.id && result.message) {
+          this.msgStore.set(result.key.id, result.message);
+          if (this.msgStore.size > 500) {
+            this.msgStore.delete(this.msgStore.keys().next().value!);
+          }
+        }
         logger.info({ jid: item.jid, length: item.text.length }, 'Queued message sent');
       }
     } finally {

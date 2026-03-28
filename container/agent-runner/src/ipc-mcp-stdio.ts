@@ -19,6 +19,7 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const mainChatJid = process.env.NANOCLAW_MAIN_JID;
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -45,11 +46,13 @@ server.tool(
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+    to_main: z.boolean().optional().describe('Send to the main group instead of this group. Use this when you want to notify the main chat from a side group (e.g. links group).'),
   },
   async (args) => {
+    const targetJid = (args.to_main && mainChatJid) ? mainChatJid : chatJid;
     const data: Record<string, string | undefined> = {
       type: 'message',
-      chatJid,
+      chatJid: targetJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,

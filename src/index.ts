@@ -380,6 +380,10 @@ async function runAgent(
       }
     : undefined;
 
+  const mainChatJid = isMain
+    ? chatJid
+    : Object.entries(registeredGroups).find(([, g]) => g.isMain)?.[0];
+
   try {
     const output = await runContainerAgent(
       group,
@@ -389,6 +393,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        mainChatJid,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
