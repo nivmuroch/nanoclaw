@@ -2,7 +2,6 @@ import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-
 import makeWASocket, {
   Browsers,
   DisconnectReason,
@@ -14,15 +13,20 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 
-import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, STORE_DIR } from '../config.js';
 import {
-  getLastGroupSync,
-  setLastGroupSync,
-  updateChatName,
-} from '../db.js';
+  ASSISTANT_HAS_OWN_NUMBER,
+  ASSISTANT_NAME,
+  STORE_DIR,
+} from '../config.js';
+import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
-import { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
+import {
+  Channel,
+  OnInboundMessage,
+  OnChatMetadata,
+  RegisteredGroup,
+} from '../types.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -52,10 +56,18 @@ export class WhatsAppChannel implements Channel {
   private msgRetryCounterCache = (() => {
     const store = new Map<string, unknown>();
     return {
-      get<T>(key: string): T | undefined { return store.get(key) as T | undefined; },
-      set<T>(key: string, value: T): void { store.set(key, value); },
-      del(key: string): void { store.delete(key); },
-      flushAll(): void { store.clear(); },
+      get<T>(key: string): T | undefined {
+        return store.get(key) as T | undefined;
+      },
+      set<T>(key: string, value: T): void {
+        store.set(key, value);
+      },
+      del(key: string): void {
+        store.delete(key);
+      },
+      flushAll(): void {
+        store.clear();
+      },
     };
   })();
 
@@ -80,23 +92,32 @@ export class WhatsAppChannel implements Channel {
     // exchange on the first message, which prevents "Waiting for this message" on the phone.
     // Keep creds.json — that's the device registration, not session state.
     if (onFirstOpen) {
-      const staleFiles = fs.readdirSync(authDir).filter(f =>
-        f.startsWith('session-') ||
-        f.startsWith('sender-key-') ||
-        f.startsWith('app-state-sync-key-'),
-      );
+      const staleFiles = fs
+        .readdirSync(authDir)
+        .filter(
+          (f) =>
+            f.startsWith('session-') ||
+            f.startsWith('sender-key-') ||
+            f.startsWith('app-state-sync-key-'),
+        );
       for (const f of staleFiles) {
         fs.rmSync(path.join(authDir, f));
       }
       if (staleFiles.length > 0) {
-        logger.info({ count: staleFiles.length }, 'Cleared stale signal sessions on startup');
+        logger.info(
+          { count: staleFiles.length },
+          'Cleared stale signal sessions on startup',
+        );
       }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
     const { version } = await fetchLatestWaWebVersion({}).catch((err) => {
-      logger.warn({ err }, 'Failed to fetch latest WA Web version, using default');
+      logger.warn(
+        { err },
+        'Failed to fetch latest WA Web version, using default',
+      );
       return { version: undefined };
     });
     const baileysSafeLogger = Object.assign(Object.create(logger as any), {
@@ -114,7 +135,9 @@ export class WhatsAppChannel implements Channel {
       logger: baileysSafeLogger,
       browser: Browsers.macOS('Chrome'),
       msgRetryCounterCache: this.msgRetryCounterCache,
-      getMessage: async (key: WAMessageKey): Promise<WAMessageContent | undefined> => {
+      getMessage: async (
+        key: WAMessageKey,
+      ): Promise<WAMessageContent | undefined> => {
         if (key.id) return this.msgStore.get(key.id);
         return undefined;
       },
@@ -139,9 +162,18 @@ export class WhatsAppChannel implements Channel {
 
       if (connection === 'close') {
         this.connected = false;
-        const reason = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
+        const reason = (
+          lastDisconnect?.error as { output?: { statusCode?: number } }
+        )?.output?.statusCode;
         const shouldReconnect = reason !== DisconnectReason.loggedOut;
-        logger.info({ reason, shouldReconnect, queuedMessages: this.outgoingQueue.length }, 'Connection closed');
+        logger.info(
+          {
+            reason,
+            shouldReconnect,
+            queuedMessages: this.outgoingQueue.length,
+          },
+          'Connection closed',
+        );
 
         if (shouldReconnect) {
           logger.info('Reconnecting...');
@@ -220,7 +252,13 @@ export class WhatsAppChannel implements Channel {
 
         // Always notify about chat metadata for group discovery
         const isGroup = chatJid.endsWith('@g.us');
-        this.opts.onChatMetadata(chatJid, timestamp, undefined, 'whatsapp', isGroup);
+        this.opts.onChatMetadata(
+          chatJid,
+          timestamp,
+          undefined,
+          'whatsapp',
+          isGroup,
+        );
 
         // Only deliver full message for registered groups
         const groups = this.opts.registeredGroups();
@@ -255,7 +293,10 @@ export class WhatsAppChannel implements Channel {
               const transcript = await transcribeAudioMessage(msg, this.sock);
               if (transcript) {
                 finalContent = `[Voice: ${transcript}]`;
-                logger.info({ chatJid, length: transcript.length }, 'Transcribed voice message');
+                logger.info(
+                  { chatJid, length: transcript.length },
+                  'Transcribed voice message',
+                );
               } else {
                 finalContent = '[Voice Message - transcription unavailable]';
               }
@@ -291,7 +332,10 @@ export class WhatsAppChannel implements Channel {
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text: prefixed });
-      logger.info({ jid, length: prefixed.length, queueSize: this.outgoingQueue.length }, 'WA disconnected, message queued');
+      logger.info(
+        { jid, length: prefixed.length, queueSize: this.outgoingQueue.length },
+        'WA disconnected, message queued',
+      );
       return;
     }
     try {
@@ -307,7 +351,10 @@ export class WhatsAppChannel implements Channel {
     } catch (err) {
       // If send fails, queue it for retry on reconnect
       this.outgoingQueue.push({ jid, text: prefixed });
-      logger.warn({ jid, err, queueSize: this.outgoingQueue.length }, 'Failed to send, message queued');
+      logger.warn(
+        { jid, err, queueSize: this.outgoingQueue.length },
+        'Failed to send, message queued',
+      );
     }
   }
 
@@ -377,18 +424,26 @@ export class WhatsAppChannel implements Channel {
     // Check local cache first
     const cached = this.lidToPhoneMap[lidUser];
     if (cached) {
-      logger.debug({ lidJid: jid, phoneJid: cached }, 'Translated LID to phone JID (cached)');
+      logger.debug(
+        { lidJid: jid, phoneJid: cached },
+        'Translated LID to phone JID (cached)',
+      );
       return cached;
     }
 
     // Query Baileys' signal repository for the mapping
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pn = await (this.sock.signalRepository as any)?.lidMapping?.getPNForLID(jid);
+      const pn = await (
+        this.sock.signalRepository as any
+      )?.lidMapping?.getPNForLID(jid);
       if (pn) {
         const phoneJid = `${pn.split('@')[0].split(':')[0]}@s.whatsapp.net`;
         this.lidToPhoneMap[lidUser] = phoneJid;
-        logger.info({ lidJid: jid, phoneJid }, 'Translated LID to phone JID (signalRepository)');
+        logger.info(
+          { lidJid: jid, phoneJid },
+          'Translated LID to phone JID (signalRepository)',
+        );
         return phoneJid;
       }
     } catch (err) {
@@ -402,18 +457,26 @@ export class WhatsAppChannel implements Channel {
     if (this.flushing || this.outgoingQueue.length === 0) return;
     this.flushing = true;
     try {
-      logger.info({ count: this.outgoingQueue.length }, 'Flushing outgoing message queue');
+      logger.info(
+        { count: this.outgoingQueue.length },
+        'Flushing outgoing message queue',
+      );
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         // Send directly — queued items are already prefixed by sendMessage
-        const result = await this.sock.sendMessage(item.jid, { text: item.text });
+        const result = await this.sock.sendMessage(item.jid, {
+          text: item.text,
+        });
         if (result?.key.id && result.message) {
           this.msgStore.set(result.key.id, result.message);
           if (this.msgStore.size > 500) {
             this.msgStore.delete(this.msgStore.keys().next().value!);
           }
         }
-        logger.info({ jid: item.jid, length: item.text.length }, 'Queued message sent');
+        logger.info(
+          { jid: item.jid, length: item.text.length },
+          'Queued message sent',
+        );
       }
     } finally {
       this.flushing = false;
@@ -424,7 +487,9 @@ export class WhatsAppChannel implements Channel {
 registerChannel('whatsapp', (opts: ChannelOpts) => {
   const authDir = path.join(STORE_DIR, 'auth');
   if (!fs.existsSync(path.join(authDir, 'creds.json'))) {
-    logger.warn('WhatsApp: credentials not found. Run /add-whatsapp to authenticate.');
+    logger.warn(
+      'WhatsApp: credentials not found. Run /add-whatsapp to authenticate.',
+    );
     return null;
   }
   return new WhatsAppChannel(opts);
