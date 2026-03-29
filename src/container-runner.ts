@@ -295,7 +295,10 @@ function buildSubprocessEnv(
 
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(([, v]) => v !== undefined) as [string, string][],
+      Object.entries(process.env).filter(([, v]) => v !== undefined) as [
+        string,
+        string,
+      ][],
     ),
     TZ: TIMEZONE,
     // Workspace path mappings (replace Docker volume mounts)
@@ -333,7 +336,14 @@ export async function runContainerAgent(
   fs.mkdirSync(groupDir, { recursive: true });
 
   if (SUBPROCESS_MODE) {
-    return runSubprocessAgent(group, input, groupDir, startTime, onProcess, onOutput);
+    return runSubprocessAgent(
+      group,
+      input,
+      groupDir,
+      startTime,
+      onProcess,
+      onOutput,
+    );
   }
 
   const mounts = buildVolumeMounts(group, input.isMain);
@@ -835,7 +845,10 @@ function runSubprocessAgent(
             resetTimeout();
             outputChain = outputChain.then(() => onOutput(parsed));
           } catch (err) {
-            logger.warn({ group: group.name, error: err }, 'Failed to parse streamed output chunk');
+            logger.warn(
+              { group: group.name, error: err },
+              'Failed to parse streamed output chunk',
+            );
           }
         }
       }
@@ -843,9 +856,13 @@ function runSubprocessAgent(
 
     proc.stderr.on('data', (data) => {
       const chunk = data.toString();
-      chunk.trim().split('\n').filter(Boolean).forEach((line: string) => {
-        logger.debug({ subprocess: group.folder }, line);
-      });
+      chunk
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .forEach((line: string) => {
+          logger.debug({ subprocess: group.folder }, line);
+        });
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
       if (chunk.length > remaining) {
@@ -858,7 +875,10 @@ function runSubprocessAgent(
 
     const killOnTimeout = () => {
       timedOut = true;
-      logger.error({ group: group.name, processName }, 'Subprocess timeout, killing');
+      logger.error(
+        { group: group.name, processName },
+        'Subprocess timeout, killing',
+      );
       proc.kill('SIGKILL');
     };
 
@@ -888,7 +908,10 @@ function runSubprocessAgent(
       }
 
       if (code !== 0) {
-        logger.error({ group: group.name, code, duration, stderr }, 'Subprocess exited with error');
+        logger.error(
+          { group: group.name, code, duration, stderr },
+          'Subprocess exited with error',
+        );
         resolve({
           status: 'error',
           result: null,
@@ -899,7 +922,10 @@ function runSubprocessAgent(
 
       if (onOutput) {
         outputChain.then(() => {
-          logger.info({ group: group.name, duration, newSessionId }, 'Subprocess completed (streaming)');
+          logger.info(
+            { group: group.name, duration, newSessionId },
+            'Subprocess completed (streaming)',
+          );
           resolve({ status: 'success', result: null, newSessionId });
         });
         return;
@@ -910,7 +936,9 @@ function runSubprocessAgent(
         const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
         let jsonLine: string;
         if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+          jsonLine = stdout
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
         } else {
           const lines = stdout.trim().split('\n');
           jsonLine = lines[lines.length - 1];
@@ -927,8 +955,15 @@ function runSubprocessAgent(
 
     proc.on('error', (err) => {
       clearTimeout(timeout);
-      logger.error({ group: group.name, processName, error: err }, 'Subprocess spawn error');
-      resolve({ status: 'error', result: null, error: `Subprocess spawn error: ${err.message}` });
+      logger.error(
+        { group: group.name, processName, error: err },
+        'Subprocess spawn error',
+      );
+      resolve({
+        status: 'error',
+        result: null,
+        error: `Subprocess spawn error: ${err.message}`,
+      });
     });
   });
 }

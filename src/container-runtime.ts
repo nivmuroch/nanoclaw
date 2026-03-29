@@ -15,8 +15,7 @@ export const CONTAINER_RUNTIME_BIN = 'docker';
  * When true, agents run as local subprocesses instead of Docker containers.
  * Set CONTAINER_RUNTIME=subprocess to enable (e.g. on Railway).
  */
-export const SUBPROCESS_MODE =
-  process.env.CONTAINER_RUNTIME === 'subprocess';
+export const SUBPROCESS_MODE = process.env.CONTAINER_RUNTIME === 'subprocess';
 
 /** Hostname containers use to reach the host machine. */
 export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';

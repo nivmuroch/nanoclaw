@@ -161,21 +161,30 @@ export class WhatsAppChannel implements Channel {
             try {
               const code = await this.sock.requestPairingCode(phoneNumber);
               console.error(`\n🔑 WHATSAPP PAIRING CODE: ${code}`);
-              console.error(`   WhatsApp → Linked Devices → Link a Device → Link with phone number`);
+              console.error(
+                `   WhatsApp → Linked Devices → Link a Device → Link with phone number`,
+              );
               console.error(`   (valid for 5 minutes — will auto-refresh)\n`);
               // Reconnect after 5 minutes to get a fresh code if not yet paired
-              setTimeout(() => {
-                if (!this.connected) {
-                  logger.info('Pairing code expired — reconnecting for fresh code...');
-                  this.sock.end(undefined);
-                }
-              }, 5 * 60 * 1000);
+              setTimeout(
+                () => {
+                  if (!this.connected) {
+                    logger.info(
+                      'Pairing code expired — reconnecting for fresh code...',
+                    );
+                    this.sock.end(undefined);
+                  }
+                },
+                5 * 60 * 1000,
+              );
             } catch (err) {
               logger.error({ err }, 'Failed to request pairing code');
             }
           }, 3000);
         } else {
-          logger.warn('WhatsApp QR code — scan with your phone (or set WHATSAPP_PHONE_NUMBER for pairing code):');
+          logger.warn(
+            'WhatsApp QR code — scan with your phone (or set WHATSAPP_PHONE_NUMBER for pairing code):',
+          );
           qrcodeTerminal.generate(qr, { small: true }, (qrText: string) => {
             process.stderr.write('\n' + qrText + '\n');
           });
@@ -202,9 +211,15 @@ export class WhatsAppChannel implements Channel {
 
         if (shouldReconnect || reason === DisconnectReason.loggedOut) {
           if (reason === DisconnectReason.loggedOut) {
-            logger.warn('Logged out — clearing auth and reconnecting for QR re-auth...');
+            logger.warn(
+              'Logged out — clearing auth and reconnecting for QR re-auth...',
+            );
             const authDir = path.join(STORE_DIR, 'auth');
-            try { fs.rmSync(authDir, { recursive: true, force: true }); } catch { /* ignore */ }
+            try {
+              fs.rmSync(authDir, { recursive: true, force: true });
+            } catch {
+              /* ignore */
+            }
           } else {
             logger.info('Reconnecting...');
           }
