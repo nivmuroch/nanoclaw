@@ -21,6 +21,7 @@ import { logger } from './logger.js';
 import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
+  SUBPROCESS_MODE,
   hostGatewayArgs,
   readonlyMountArgs,
   stopContainer,
@@ -279,6 +280,47 @@ function buildContainerArgs(
   return args;
 }
 
+/**
+ * Build the agent-runner subprocess environment for a group.
+ * Maps workspace paths to real host directories instead of container mounts.
+ */
+function buildSubprocessEnv(
+  group: RegisteredGroup,
+  input: ContainerInput,
+): Record<string, string> {
+  const groupDir = resolveGroupFolderPath(group.folder);
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  const globalDir = path.join(GROUPS_DIR, 'global');
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder);
+
+  const env: Record<string, string> = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([, v]) => v !== undefined) as [string, string][],
+    ),
+    TZ: TIMEZONE,
+    // Workspace path mappings (replace Docker volume mounts)
+    NANOCLAW_GROUP_DIR: groupDir,
+    NANOCLAW_GLOBAL_DIR: globalDir,
+    NANOCLAW_EXTRA_DIR: path.join(groupDir, 'extra'),
+    NANOCLAW_IPC_INPUT_DIR: path.join(groupIpcDir, 'input'),
+    // Per-group Claude session isolation via HOME
+    HOME: groupSessionsDir,
+    // Credential proxy on loopback (subprocess runs on host, not in container)
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`,
+    // Placeholder credential so the SDK picks the right auth mode
+    ...(detectAuthMode() === 'api-key'
+      ? { ANTHROPIC_API_KEY: 'placeholder' }
+      : { CLAUDE_CODE_OAUTH_TOKEN: 'placeholder' }),
+  };
+
+  // Main group gets project root as a readable directory
+  if (input.isMain) {
+    env.NANOCLAW_PROJECT_DIR = process.cwd();
+  }
+
+  return env;
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -289,6 +331,10 @@ export async function runContainerAgent(
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
+
+  if (SUBPROCESS_MODE) {
+    return runSubprocessAgent(group, input, groupDir, startTime, onProcess, onOutput);
+  }
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -663,6 +709,226 @@ export async function runContainerAgent(
         result: null,
         error: `Container spawn error: ${err.message}`,
       });
+    });
+  });
+}
+
+/**
+ * Run the agent-runner as a local subprocess instead of inside a Docker container.
+ * Used when CONTAINER_RUNTIME=subprocess (e.g. Railway).
+ * Same stdin/stdout/IPC protocol as the Docker path — only the spawn differs.
+ */
+function runSubprocessAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  groupDir: string,
+  startTime: number,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  const agentRunnerPath = path.join(
+    process.cwd(),
+    'container',
+    'agent-runner',
+    'dist',
+    'index.js',
+  );
+
+  // Ensure group session dir exists (HOME for the subprocess)
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder);
+  fs.mkdirSync(path.join(groupSessionsDir, '.claude'), { recursive: true });
+
+  // Write settings.json and sync skills (mirrors buildVolumeMounts logic)
+  const settingsFile = path.join(groupSessionsDir, '.claude', 'settings.json');
+  if (!fs.existsSync(settingsFile)) {
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify(
+        {
+          env: {
+            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+  }
+  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const skillsDst = path.join(groupSessionsDir, '.claude', 'skills');
+  if (fs.existsSync(skillsSrc)) {
+    for (const skillDir of fs.readdirSync(skillsSrc)) {
+      const srcDir = path.join(skillsSrc, skillDir);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      fs.cpSync(srcDir, path.join(skillsDst, skillDir), { recursive: true });
+    }
+  }
+
+  // Ensure IPC directories exist
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+
+  const subprocessEnv = buildSubprocessEnv(group, input);
+  const processName = `nanoclaw-${group.folder.replace(/[^a-zA-Z0-9-]/g, '-')}-${Date.now()}`;
+
+  logger.info(
+    { group: group.name, processName, agentRunnerPath },
+    'Spawning subprocess agent',
+  );
+
+  const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+  const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+
+  return new Promise((resolve) => {
+    const proc = spawn('node', [agentRunnerPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: subprocessEnv,
+      cwd: groupDir,
+    });
+
+    onProcess(proc, processName);
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+
+    proc.stdin.write(JSON.stringify(input));
+    proc.stdin.end();
+
+    let parseBuffer = '';
+    let newSessionId: string | undefined;
+    let outputChain = Promise.resolve();
+    let hadStreamingOutput = false;
+    let timedOut = false;
+
+    proc.stdout.on('data', (data) => {
+      const chunk = data.toString();
+      if (!stdoutTruncated) {
+        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
+        if (chunk.length > remaining) {
+          stdout += chunk.slice(0, remaining);
+          stdoutTruncated = true;
+        } else {
+          stdout += chunk;
+        }
+      }
+
+      if (onOutput) {
+        parseBuffer += chunk;
+        let startIdx: number;
+        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
+          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
+          if (endIdx === -1) break;
+          const jsonStr = parseBuffer
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
+          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
+          try {
+            const parsed: ContainerOutput = JSON.parse(jsonStr);
+            if (parsed.newSessionId) newSessionId = parsed.newSessionId;
+            hadStreamingOutput = true;
+            resetTimeout();
+            outputChain = outputChain.then(() => onOutput(parsed));
+          } catch (err) {
+            logger.warn({ group: group.name, error: err }, 'Failed to parse streamed output chunk');
+          }
+        }
+      }
+    });
+
+    proc.stderr.on('data', (data) => {
+      const chunk = data.toString();
+      chunk.trim().split('\n').filter(Boolean).forEach((line: string) => {
+        logger.debug({ subprocess: group.folder }, line);
+      });
+      if (stderrTruncated) return;
+      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
+      if (chunk.length > remaining) {
+        stderr += chunk.slice(0, remaining);
+        stderrTruncated = true;
+      } else {
+        stderr += chunk;
+      }
+    });
+
+    const killOnTimeout = () => {
+      timedOut = true;
+      logger.error({ group: group.name, processName }, 'Subprocess timeout, killing');
+      proc.kill('SIGKILL');
+    };
+
+    let timeout = setTimeout(killOnTimeout, timeoutMs);
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(killOnTimeout, timeoutMs);
+    };
+
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      const duration = Date.now() - startTime;
+
+      if (timedOut) {
+        if (hadStreamingOutput) {
+          outputChain.then(() =>
+            resolve({ status: 'success', result: null, newSessionId }),
+          );
+          return;
+        }
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Subprocess timed out after ${configTimeout}ms`,
+        });
+        return;
+      }
+
+      if (code !== 0) {
+        logger.error({ group: group.name, code, duration, stderr }, 'Subprocess exited with error');
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Subprocess exited with code ${code}: ${stderr.slice(-200)}`,
+        });
+        return;
+      }
+
+      if (onOutput) {
+        outputChain.then(() => {
+          logger.info({ group: group.name, duration, newSessionId }, 'Subprocess completed (streaming)');
+          resolve({ status: 'success', result: null, newSessionId });
+        });
+        return;
+      }
+
+      try {
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+        let jsonLine: string;
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+        } else {
+          const lines = stdout.trim().split('\n');
+          jsonLine = lines[lines.length - 1];
+        }
+        resolve(JSON.parse(jsonLine) as ContainerOutput);
+      } catch (err) {
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Failed to parse subprocess output: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      logger.error({ group: group.name, processName, error: err }, 'Subprocess spawn error');
+      resolve({ status: 'error', result: null, error: `Subprocess spawn error: ${err.message}` });
     });
   });
 }

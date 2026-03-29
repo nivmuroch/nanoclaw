@@ -11,6 +11,13 @@ import { logger } from './logger.js';
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'docker';
 
+/**
+ * When true, agents run as local subprocesses instead of Docker containers.
+ * Set CONTAINER_RUNTIME=subprocess to enable (e.g. on Railway).
+ */
+export const SUBPROCESS_MODE =
+  process.env.CONTAINER_RUNTIME === 'subprocess';
+
 /** Hostname containers use to reach the host machine. */
 export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
 
@@ -67,6 +74,10 @@ export function stopContainer(name: string): void {
 
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
+  if (SUBPROCESS_MODE) {
+    logger.info('Subprocess mode enabled — skipping container runtime check');
+    return;
+  }
   try {
     execSync(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
@@ -107,6 +118,7 @@ export function ensureContainerRuntimeRunning(): void {
 
 /** Kill orphaned NanoClaw containers from previous runs. */
 export function cleanupOrphans(): void {
+  if (SUBPROCESS_MODE) return;
   try {
     const output = execSync(
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,

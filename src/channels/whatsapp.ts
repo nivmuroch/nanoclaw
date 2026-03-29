@@ -2,6 +2,8 @@ import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import qrcodeTerminal from 'qrcode-terminal';
+
 import makeWASocket, {
   Browsers,
   DisconnectReason,
@@ -125,6 +127,7 @@ export class WhatsAppChannel implements Channel {
       child: () => baileysSafeLogger,
       trace: () => {},
     });
+    const phoneNumber = process.env.WHATSAPP_PHONE_NUMBER;
     this.sock = makeWASocket({
       version,
       auth: {
@@ -151,13 +154,35 @@ export class WhatsAppChannel implements Channel {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        const msg =
-          'WhatsApp authentication required. Run /setup in Claude Code.';
-        logger.error(msg);
+        if (phoneNumber) {
+          // Server mode: request pairing code once per connection.
+          // Socket reconnects every 5 minutes to issue a fresh valid code.
+          setTimeout(async () => {
+            try {
+              const code = await this.sock.requestPairingCode(phoneNumber);
+              console.error(`\n🔑 WHATSAPP PAIRING CODE: ${code}`);
+              console.error(`   WhatsApp → Linked Devices → Link a Device → Link with phone number`);
+              console.error(`   (valid for 5 minutes — will auto-refresh)\n`);
+              // Reconnect after 5 minutes to get a fresh code if not yet paired
+              setTimeout(() => {
+                if (!this.connected) {
+                  logger.info('Pairing code expired — reconnecting for fresh code...');
+                  this.sock.end(undefined);
+                }
+              }, 5 * 60 * 1000);
+            } catch (err) {
+              logger.error({ err }, 'Failed to request pairing code');
+            }
+          }, 3000);
+        } else {
+          logger.warn('WhatsApp QR code — scan with your phone (or set WHATSAPP_PHONE_NUMBER for pairing code):');
+          qrcodeTerminal.generate(qr, { small: true }, (qrText: string) => {
+            process.stderr.write('\n' + qrText + '\n');
+          });
+        }
         exec(
-          `osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`,
+          `osascript -e 'display notification "WhatsApp auth needed" with title "NanoClaw" sound name "Basso"' 2>/dev/null`,
         );
-        setTimeout(() => process.exit(1), 1000);
       }
 
       if (connection === 'close') {
@@ -175,8 +200,14 @@ export class WhatsAppChannel implements Channel {
           'Connection closed',
         );
 
-        if (shouldReconnect) {
-          logger.info('Reconnecting...');
+        if (shouldReconnect || reason === DisconnectReason.loggedOut) {
+          if (reason === DisconnectReason.loggedOut) {
+            logger.warn('Logged out — clearing auth and reconnecting for QR re-auth...');
+            const authDir = path.join(STORE_DIR, 'auth');
+            try { fs.rmSync(authDir, { recursive: true, force: true }); } catch { /* ignore */ }
+          } else {
+            logger.info('Reconnecting...');
+          }
           this.connectInternal().catch((err) => {
             logger.error({ err }, 'Failed to reconnect, retrying in 5s');
             setTimeout(() => {
@@ -185,9 +216,6 @@ export class WhatsAppChannel implements Channel {
               });
             }, 5000);
           });
-        } else {
-          logger.info('Logged out. Run /setup to re-authenticate.');
-          process.exit(0);
         }
       } else if (connection === 'open') {
         this.connected = true;
@@ -488,9 +516,8 @@ registerChannel('whatsapp', (opts: ChannelOpts) => {
   const authDir = path.join(STORE_DIR, 'auth');
   if (!fs.existsSync(path.join(authDir, 'creds.json'))) {
     logger.warn(
-      'WhatsApp: credentials not found. Run /add-whatsapp to authenticate.',
+      'WhatsApp: no credentials — starting anyway to show QR code in logs.',
     );
-    return null;
   }
   return new WhatsAppChannel(opts);
 });

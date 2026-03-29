@@ -57,7 +57,10 @@ interface SDKUserMessage {
   session_id: string;
 }
 
-const IPC_INPUT_DIR = '/workspace/ipc/input';
+const WORKSPACE_GROUP = process.env.NANOCLAW_GROUP_DIR ?? '/workspace/group';
+const WORKSPACE_GLOBAL = process.env.NANOCLAW_GLOBAL_DIR ?? '/workspace/global';
+const WORKSPACE_EXTRA = process.env.NANOCLAW_EXTRA_DIR ?? '/workspace/extra';
+const IPC_INPUT_DIR = process.env.NANOCLAW_IPC_INPUT_DIR ?? '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
@@ -168,7 +171,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       const summary = getSessionSummary(sessionId, transcriptPath);
       const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
-      const conversationsDir = '/workspace/group/conversations';
+      const conversationsDir = path.join(WORKSPACE_GROUP, 'conversations');
       fs.mkdirSync(conversationsDir, { recursive: true });
 
       const date = new Date().toISOString().split('T')[0];
@@ -370,16 +373,16 @@ async function runQuery(
   let resultCount = 0;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  const globalClaudeMdPath = path.join(WORKSPACE_GLOBAL, 'CLAUDE.md');
   let globalClaudeMd: string | undefined;
   if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
-  // Discover additional directories mounted at /workspace/extra/*
+  // Discover additional directories mounted at WORKSPACE_EXTRA/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
+  const extraBase = WORKSPACE_EXTRA;
   if (fs.existsSync(extraBase)) {
     for (const entry of fs.readdirSync(extraBase)) {
       const fullPath = path.join(extraBase, entry);
@@ -395,7 +398,7 @@ async function runQuery(
   for await (const message of query({
     prompt: stream,
     options: {
-      cwd: '/workspace/group',
+      cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
@@ -413,8 +416,7 @@ async function runQuery(
         'mcp__nanoclaw__*'
       ],
       env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      permissionMode: 'acceptEdits',
       settingSources: ['project', 'user'],
       mcpServers: {
         nanoclaw: {
@@ -616,6 +618,13 @@ async function main(): Promise<void> {
       prompt = nextMessage;
     }
   } catch (err) {
+    // Log full error including any stderr/cause for debugging
+    if (err instanceof Error && (err as Error & { stderr?: string; cause?: unknown }).stderr) {
+      log(`Agent error stderr: ${(err as Error & { stderr?: string }).stderr}`);
+    }
+    if (err instanceof Error && (err as Error & { cause?: unknown }).cause) {
+      log(`Agent error cause: ${String((err as Error & { cause?: unknown }).cause)}`);
+    }
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
     writeOutput({

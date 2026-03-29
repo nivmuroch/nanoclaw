@@ -20,10 +20,10 @@ async function transcribeWithOpenAI(
   config: TranscriptionConfig,
 ): Promise<string | null> {
   const env = readEnvFile(['OPENAI_API_KEY']);
-  const apiKey = env.OPENAI_API_KEY;
+  const apiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    console.warn('OPENAI_API_KEY not set in .env');
+    console.warn('OPENAI_API_KEY not set in .env or environment');
     return null;
   }
 

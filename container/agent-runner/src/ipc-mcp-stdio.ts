@@ -11,7 +11,11 @@ import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
-const IPC_DIR = '/workspace/ipc';
+// In subprocess mode (Railway), NANOCLAW_IPC_INPUT_DIR is set to the real IPC input dir.
+// Derive the group IPC base from it; fall back to the Docker container path.
+const IPC_DIR = process.env.NANOCLAW_IPC_INPUT_DIR
+  ? path.dirname(process.env.NANOCLAW_IPC_INPUT_DIR)
+  : '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 

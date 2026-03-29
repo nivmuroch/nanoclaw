@@ -1,0 +1,13 @@
+[build]
+  builder = "dockerfile"
+
+[deploy]
+  startCommand = "/start.sh"
+
+# Required environment variables — set these in Railway dashboard:
+#   CONTAINER_RUNTIME=subprocess
+#   CLAUDE_CODE_OAUTH_TOKEN=<your token>
+#   OPENAI_API_KEY=<your key>       (optional, for transcription)
+#   TZ=Asia/Jerusalem
+#   ASSISTANT_NAME=me
+#   ASSISTANT_HAS_OWN_NUMBER=false
