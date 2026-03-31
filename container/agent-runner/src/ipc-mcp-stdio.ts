@@ -56,10 +56,11 @@ server.tool(
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
     to_main: z.boolean().optional().describe('Send to the main group instead of this group. Use this when you want to notify the main chat from a side group (e.g. links group).'),
+    to_jid: z.string().optional().describe('(Main group only) JID of a specific registered group to send to. Find JIDs in available_groups.json. Use when the user asks you to send a message to a specific group.'),
     cc: z.boolean().optional().describe('Also send to pre-configured CC recipients. Recipients are defined at group registration time — you cannot target arbitrary JIDs. No-op if no CC recipients are configured.'),
   },
   async (args) => {
-    const targetJid = (args.to_main && mainChatJid) ? mainChatJid : chatJid;
+    const targetJid = (args.to_jid && isMain) ? args.to_jid : (args.to_main && mainChatJid) ? mainChatJid : chatJid;
     const base = {
       type: 'message' as const,
       text: args.text,

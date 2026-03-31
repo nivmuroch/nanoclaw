@@ -187,6 +187,7 @@ export async function processTaskIpc(
     script?: string;
     groupFolder?: string;
     chatJid?: string;
+    text?: string;
     targetJid?: string;
     // For register_group
     jid?: string;
@@ -205,6 +206,43 @@ export async function processTaskIpc(
   const registeredGroups = deps.registeredGroups();
 
   switch (data.type) {
+    case 'message':
+      // Fallback: agent wrote a send_message IPC to the tasks dir instead of messages dir.
+      // Apply the same authorization logic as the messages processor.
+      if (data.chatJid && data.text) {
+        const targetGroup = registeredGroups[data.chatJid];
+        if (targetGroup?.monitorOnly) {
+          logger.warn(
+            { chatJid: data.chatJid, sourceGroup },
+            'monitorOnly guard: IPC message to spy group blocked (via tasks dir)',
+          );
+        } else {
+          const sourceRegisteredGroup = Object.values(registeredGroups).find(
+            (g) => g.folder === sourceGroup,
+          );
+          const isCCAuthorized =
+            sourceRegisteredGroup?.notifyCC?.includes(data.chatJid) === true;
+          if (
+            isMain ||
+            targetGroup?.isMain ||
+            (targetGroup && targetGroup.folder === sourceGroup) ||
+            isCCAuthorized
+          ) {
+            await deps.sendMessage(data.chatJid, data.text);
+            logger.info(
+              { chatJid: data.chatJid, sourceGroup },
+              'IPC message sent (recovered from tasks dir)',
+            );
+          } else {
+            logger.warn(
+              { chatJid: data.chatJid, sourceGroup },
+              'Unauthorized IPC message attempt blocked (via tasks dir)',
+            );
+          }
+        }
+      }
+      break;
+
     case 'schedule_task':
       if (
         data.prompt &&
