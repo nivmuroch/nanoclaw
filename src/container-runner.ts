@@ -34,6 +34,18 @@ import { RegisteredGroup } from './types.js';
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
+// Env vars prefixed with NANOCLAW_ENV_ are forwarded to containers with the prefix stripped.
+// Set NANOCLAW_ENV_MY_SECRET=xxx in Railway (or .env) → container sees MY_SECRET=xxx.
+const NANOCLAW_ENV_PREFIX = 'NANOCLAW_ENV_';
+
+function extraEnvVars(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(process.env)
+      .filter(([k, v]) => k.startsWith(NANOCLAW_ENV_PREFIX) && v !== undefined)
+      .map(([k, v]) => [k.slice(NANOCLAW_ENV_PREFIX.length), v as string]),
+  );
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -269,6 +281,11 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
+  // Forward NANOCLAW_ENV_* vars into the container with the prefix stripped
+  for (const [k, v] of Object.entries(extraEnvVars())) {
+    args.push('-e', `${k}=${v}`);
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
@@ -315,6 +332,8 @@ function buildSubprocessEnv(
         string,
       ][],
     ),
+    // Also expose NANOCLAW_ENV_* vars with prefix stripped, consistent with Docker mode
+    ...extraEnvVars(),
     TZ: TIMEZONE,
     // Workspace path mappings (replace Docker volume mounts)
     NANOCLAW_GROUP_DIR: groupDir,
