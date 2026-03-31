@@ -10,6 +10,8 @@ import {
   IDLE_TIMEOUT,
   MAX_MESSAGES_PER_PROMPT,
   POLL_INTERVAL,
+  SPY_BATCH_INTERVAL_MS,
+  SPY_MAX_INPUT_CHARS,
   TIMEZONE,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
@@ -62,6 +64,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import { SendApprovalGate } from './send-approval-gate.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -76,6 +79,25 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+// Hard send-approval gate — every outbound message to a non-main group is
+// held until the owner explicitly approves it via the main group chat.
+let approvalGate: SendApprovalGate;
+
+// Spy group batching: one timer per monitorOnly JID, fires SPY_BATCH_INTERVAL_MS after first new message
+const spyBatchTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
+/**
+ * Trim a formatted message string to fit within SPY_MAX_INPUT_CHARS by
+ * dropping the oldest messages (split on double-newline boundaries).
+ */
+function truncateSpyInput(formatted: string): string {
+  if (formatted.length <= SPY_MAX_INPUT_CHARS) return formatted;
+  const parts = formatted.split('\n\n');
+  while (parts.length > 1 && parts.join('\n\n').length > SPY_MAX_INPUT_CHARS) {
+    parts.shift();
+  }
+  return parts.join('\n\n');
+}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -225,6 +247,26 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // Hard approval gate: if this is the main group and the last user message
+  // is an approval command (approve/deny/pending), handle it and skip agent.
+  if (isMainGroup && approvalGate) {
+    const lastUserMsg = [...missedMessages]
+      .reverse()
+      .find((m) => !m.is_from_me && !m.is_bot_message);
+    if (lastUserMsg) {
+      const handled = await approvalGate.handleCommand(
+        chatJid,
+        lastUserMsg.content,
+      );
+      if (handled) {
+        lastAgentTimestamp[chatJid] =
+          missedMessages[missedMessages.length - 1].timestamp;
+        saveState();
+        return true;
+      }
+    }
+  }
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
@@ -237,7 +279,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const rawPrompt = formatMessages(missedMessages, TIMEZONE);
+  const prompt = group.monitorOnly ? truncateSpyInput(rawPrompt) : rawPrompt;
+  if (group.monitorOnly && prompt !== rawPrompt) {
+    logger.info(
+      {
+        group: group.name,
+        originalChars: rawPrompt.length,
+        truncatedChars: prompt.length,
+      },
+      'Spy batch truncated to fit input limit',
+    );
+  }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -283,7 +336,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       // Hard guard: monitorOnly groups never receive messages from the bot
       if (text && !group.monitorOnly) {
-        await channel.sendMessage(chatJid, text);
+        await approvalGate.send(chatJid, text);
         outputSentToUser = true;
       } else if (text && group.monitorOnly) {
         logger.warn(
@@ -468,6 +521,43 @@ async function startMessageLoop(): Promise<void> {
 
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+
+          // Hard approval gate: intercept approval commands from main group
+          // before piping to an active container, so the agent never sees them.
+          if (isMainGroup && approvalGate) {
+            const lastUserMsg = [...groupMessages]
+              .reverse()
+              .find((m) => !m.is_from_me && !m.is_bot_message);
+            if (lastUserMsg) {
+              const handled = await approvalGate.handleCommand(
+                chatJid,
+                lastUserMsg.content,
+              );
+              if (handled) {
+                lastAgentTimestamp[chatJid] =
+                  groupMessages[groupMessages.length - 1].timestamp;
+                saveState();
+                continue;
+              }
+            }
+          }
+
+          // Spy groups: skip per-message invocation — arm a batch timer instead.
+          // Messages accumulate in DB; timer fires one LLM call with the full batch.
+          if (group.monitorOnly) {
+            if (!spyBatchTimers[chatJid]) {
+              spyBatchTimers[chatJid] = setTimeout(() => {
+                delete spyBatchTimers[chatJid];
+                queue.enqueueMessageCheck(chatJid);
+                logger.info({ group: group.name }, 'Spy batch timer fired');
+              }, SPY_BATCH_INTERVAL_MS);
+              logger.debug(
+                { group: group.name, intervalMs: SPY_BATCH_INTERVAL_MS },
+                'Spy batch timer armed',
+              );
+            }
+            continue;
+          }
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
@@ -683,6 +773,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Hard send-approval gate: every outbound message to a non-main group is
+  // held until the owner approves it in the main group chat.
+  approvalGate = new SendApprovalGate(
+    async (jid, text) => {
+      const ch = findChannel(channels, jid);
+      if (!ch) throw new Error(`No channel for JID: ${jid}`);
+      return ch.sendMessage(jid, text);
+    },
+    () => Object.entries(registeredGroups).find(([, g]) => g.isMain)?.[0],
+    (jid) => registeredGroups[jid]?.name ?? jid,
+  );
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
@@ -691,21 +793,12 @@ async function main(): Promise<void> {
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
-        logger.warn({ jid }, 'No channel owns JID, cannot send message');
-        return;
-      }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (text) await approvalGate.send(jid, text);
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
-    },
+    sendMessage: (jid, text) => approvalGate.send(jid, text),
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {
