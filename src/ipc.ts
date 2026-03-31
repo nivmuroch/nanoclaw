@@ -77,7 +77,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
-                if (
+                // Hard guard: monitorOnly groups must never receive messages
+                if (targetGroup?.monitorOnly) {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'monitorOnly guard: IPC message to spy group blocked',
+                  );
+                } else if (
                   isMain ||
                   targetGroup?.isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
@@ -173,6 +179,7 @@ export async function processTaskIpc(
     folder?: string;
     trigger?: string;
     requiresTrigger?: boolean;
+    monitorOnly?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
   },
   sourceGroup: string, // Verified identity from IPC directory
@@ -453,6 +460,7 @@ export async function processTaskIpc(
           added_at: new Date().toISOString(),
           containerConfig: data.containerConfig,
           requiresTrigger: data.requiresTrigger,
+          monitorOnly: data.monitorOnly,
           isMain: existingGroup?.isMain,
         });
       } else {
