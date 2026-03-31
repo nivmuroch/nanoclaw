@@ -153,7 +153,10 @@ export class SendApprovalGate {
           const name = this.getGroupName(p.targetJid);
           const snippet =
             p.text.length > 60 ? `${p.text.slice(0, 60)}…` : p.text;
-          const label = name === p.targetJid ? shortJid(p.targetJid) : `${name} (${shortJid(p.targetJid)})`;
+          const label =
+            name === p.targetJid
+              ? shortJid(p.targetJid)
+              : `${name} (${shortJid(p.targetJid)})`;
           return `• \`${p.id}\` → ${label} (${ageS}s ago): ${snippet}`;
         });
         await this.rawSend(
@@ -180,7 +183,11 @@ export class SendApprovalGate {
       // Exactly one pending — apply shorthand to it
       const [singlePending] = this.pending.values();
       const isApprove = APPROVE_SHORTHAND.test(trimmed);
-      return this._resolve(singlePending.id, isApprove ? 'approve' : 'deny', mainJid);
+      return this._resolve(
+        singlePending.id,
+        isApprove ? 'approve' : 'deny',
+        mainJid,
+      );
     }
 
     const match = trimmed.match(APPROVAL_COMMAND_PATTERN);

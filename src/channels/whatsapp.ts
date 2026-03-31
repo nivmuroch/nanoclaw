@@ -324,6 +324,23 @@ export class WhatsAppChannel implements Channel {
             ? fromMe
             : content.startsWith(`${ASSISTANT_NAME}:`);
 
+          // Extract quoted/reply context if present
+          const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+          let replyPrefix = '';
+          if (contextInfo?.quotedMessage) {
+            const quotedText =
+              contextInfo.quotedMessage.conversation ||
+              contextInfo.quotedMessage.extendedTextMessage?.text ||
+              contextInfo.quotedMessage.imageMessage?.caption ||
+              contextInfo.quotedMessage.videoMessage?.caption ||
+              '[Media]';
+            const quotedSenderJid = contextInfo.participant || '';
+            const quotedSenderName = quotedSenderJid
+              .split('@')[0]
+              .split(':')[0];
+            replyPrefix = `[Reply to ${quotedSenderName}: "${quotedText}"]\n`;
+          }
+
           // Transcribe voice messages before storing
           let finalContent = content;
           if (isVoiceMessage(msg)) {
@@ -342,6 +359,10 @@ export class WhatsAppChannel implements Channel {
               logger.error({ err }, 'Voice transcription error');
               finalContent = '[Voice Message - transcription failed]';
             }
+          }
+
+          if (replyPrefix) {
+            finalContent = replyPrefix + finalContent;
           }
 
           this.opts.onMessage(chatJid, {
