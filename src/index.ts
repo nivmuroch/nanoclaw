@@ -90,7 +90,7 @@ function loadState(): void {
   // Allow clearing specific sessions via env var on startup (e.g. RESET_SESSION=whatsapp_main,whatsapp_me)
   const resetGroups = process.env.RESET_SESSION;
   if (resetGroups) {
-    for (const folder of resetGroups.split(',').map(s => s.trim())) {
+    for (const folder of resetGroups.split(',').map((s) => s.trim())) {
       if (sessions[folder]) {
         deleteSession(folder);
         delete sessions[folder];
@@ -286,7 +286,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       } else if (text && group.monitorOnly) {
-        logger.warn({ group: group.name }, 'monitorOnly guard: blocked outbound message to spy group');
+        logger.warn(
+          { group: group.name },
+          'monitorOnly guard: blocked outbound message to spy group',
+        );
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -389,6 +392,7 @@ async function runAgent(
         chatJid,
         isMain,
         mainChatJid,
+        ccJids: group.notifyCC,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
@@ -506,7 +510,10 @@ async function startMessageLoop(): Promise<void> {
               channel
                 .setTyping?.(chatJid, true)
                 ?.catch((err) =>
-                  logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
+                  logger.warn(
+                    { chatJid, err },
+                    'Failed to set typing indicator',
+                  ),
                 );
             }
           } else {

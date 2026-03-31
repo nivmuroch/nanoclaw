@@ -55,38 +55,35 @@ Or request a fresh sync from the main group via IPC and read `available_groups.j
 
 ---
 
-## Phase 3: Define Criteria
+## Phase 3: Define Criteria and CC Recipients
 
 Ask the user:
 - **What to watch for?** Keywords, topics, sender names, or any pattern (e.g., "mentions of price", "anyone saying help", "messages from @Alice")
 - **What to include in the notification?** Just a summary, the full message text, sender name + snippet?
 - **Notification format?** e.g., `👁️ [GroupName] Alice: "Need help with payment" — 14:32`
+- **CC recipients?** Any other numbers or groups that should also receive the notification (in addition to your main group). Ask for their JIDs (WhatsApp: `PHONE@s.whatsapp.net`, group: `ID@g.us`).
 
-Write the criteria and notification format into the CLAUDE.md you'll create in Phase 5.
+Write the criteria, notification format, and CC list into the CLAUDE.md you'll create in Phase 5.
 
 ---
 
 ## Phase 4: Register the Group
 
-From the **main group** (your personal chat), tell the agent:
+From the **main group** (your personal chat), tell the agent to call `register_group` with:
 
-> Register group `<JID>` as a spy/monitor named `<friendly name>`, folder `whatsapp_<folder-name>`, `requiresTrigger: false`, `monitorOnly: true`
+| Field | Value |
+|-------|-------|
+| `jid` | The group JID from Phase 2 |
+| `name` | Friendly display name |
+| `folder` | `whatsapp_<folder-name>` |
+| `trigger` | `@Andy` (or configured trigger) |
+| `requiresTrigger` | `false` — so every message wakes the agent |
+| `monitorOnly` | `true` — hard blocks all outbound messages to this group |
+| `notifyCC` | *(optional)* Array of JIDs to CC, e.g. `["972501234567@s.whatsapp.net"]` |
 
-The agent will write an IPC `register_group` file:
+**Critical:** `monitorOnly: true` AND `requiresTrigger: false` MUST be set. These are now proper MCP tool parameters — the agent no longer needs to write raw JSON files.
 
-```json
-{
-  "type": "register_group",
-  "jid": "<GROUP_JID>",
-  "name": "<Friendly Name>",
-  "folder": "whatsapp_<folder-name>",
-  "trigger": "@Andy",
-  "requiresTrigger": false,
-  "monitorOnly": true
-}
-```
-
-**Critical:** `monitorOnly: true` MUST be set. Without it the code guard is inactive.
+**CC security model:** JIDs listed in `notifyCC` are hard-whitelisted in the database. The agent can only CC those exact JIDs — it cannot target arbitrary numbers. The host IPC layer enforces this independently of the agent instructions.
 
 ---
 
@@ -102,8 +99,8 @@ You are silently monitoring this group. You are **invisible** — no one in the 
 ## STRICT RULES — read first
 
 1. **NEVER send any message to this group.** Wrap your ENTIRE output in `<internal>` tags.
-2. You may ONLY notify via `mcp__nanoclaw__send_message` with `to_main: true`.
-3. Never call `send_message` without `to_main: true`.
+2. You may ONLY notify via `mcp__nanoclaw__send_message` with `to_main: true` (and optionally `cc: true` for pre-approved recipients).
+3. Never call `send_message` to this group — `to_main` must always be true.
 4. Never call `send_message` at all if the criteria below are NOT met.
 
 Violation of rule 1 would expose the bot to the group. The code enforces this too, but you must enforce it yourself first.
@@ -119,11 +116,13 @@ Examples:
 
 ## Notification Format
 
-When criteria match, send this via `mcp__nanoclaw__send_message` (to_main: true):
+When criteria match, send via `mcp__nanoclaw__send_message` (to_main: true):
 
 ```
 👁️ [<GROUP NAME>] <sender_name>: "<relevant snippet>" — <time>
 ```
+
+If CC recipients are configured (set at registration time), also pass `cc: true` to the same call. The host enforces which JIDs are allowed — you do not specify them directly.
 
 If you need to include context, keep it concise (2-3 lines max).
 

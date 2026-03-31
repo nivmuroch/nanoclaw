@@ -135,6 +135,15 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add notify_cc column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN notify_cc TEXT DEFAULT NULL`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
@@ -603,6 +612,7 @@ export function getRegisteredGroup(
         requires_trigger: number | null;
         is_main: number | null;
         monitor_only: number | null;
+        notify_cc: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -626,6 +636,7 @@ export function getRegisteredGroup(
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     isMain: row.is_main === 1 ? true : undefined,
     monitorOnly: row.monitor_only === 1 ? true : undefined,
+    notifyCC: row.notify_cc ? JSON.parse(row.notify_cc) : undefined,
   };
 }
 
@@ -634,8 +645,8 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, monitor_only)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, monitor_only, notify_cc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -646,6 +657,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.isMain ? 1 : 0,
     group.monitorOnly ? 1 : 0,
+    group.notifyCC?.length ? JSON.stringify(group.notifyCC) : null,
   );
 }
 
@@ -660,6 +672,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     requires_trigger: number | null;
     is_main: number | null;
     monitor_only: number | null;
+    notify_cc: string | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -682,6 +695,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
       isMain: row.is_main === 1 ? true : undefined,
       monitorOnly: row.monitor_only === 1 ? true : undefined,
+      notifyCC: row.notify_cc ? JSON.parse(row.notify_cc) : undefined,
     };
   }
   return result;

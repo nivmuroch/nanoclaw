@@ -41,6 +41,7 @@ export interface RegisteredGroup {
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
   monitorOnly?: boolean; // True for spy/listen-only groups: agent runs but NEVER sends back to this group
+  notifyCC?: string[]; // Whitelist of JIDs this spy group is allowed to CC on notifications (hard-enforced at IPC layer)
 }
 
 export interface NewMessage {

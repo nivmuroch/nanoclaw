@@ -413,7 +413,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__google-calendar__*'
       ],
       env: sdkEnv,
       permissionMode: 'acceptEdits',
@@ -427,6 +428,14 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
             ...(containerInput.mainChatJid ? { NANOCLAW_MAIN_JID: containerInput.mainChatJid } : {}),
+            ...(containerInput.ccJids?.length ? { NANOCLAW_CC_JIDS: containerInput.ccJids.join(',') } : {}),
+          },
+        },
+        'google-calendar': {
+          command: 'npx',
+          args: ['-y', '@cocal/google-calendar-mcp', 'start'],
+          env: {
+            GOOGLE_OAUTH_CREDENTIALS: '/home/node/.config/google-calendar-mcp/gcp-oauth.keys.json',
           },
         },
       },

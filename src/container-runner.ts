@@ -41,6 +41,7 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   mainChatJid?: string;
+  ccJids?: string[]; // Pre-approved CC JIDs injected from notifyCC whitelist (spy groups only)
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
@@ -215,6 +216,20 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Google Calendar credentials (read-only — tokens written by host OAuth flow)
+  const calendarConfigDir = path.join(
+    process.env.HOME || '/root',
+    '.config',
+    'google-calendar-mcp',
+  );
+  if (fs.existsSync(calendarConfigDir)) {
+    mounts.push({
+      hostPath: calendarConfigDir,
+      containerPath: '/home/node/.config/google-calendar-mcp',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -308,6 +323,8 @@ function buildSubprocessEnv(
     NANOCLAW_IPC_INPUT_DIR: path.join(groupIpcDir, 'input'),
     // Per-group Claude session isolation via HOME
     HOME: groupSessionsDir,
+    // Redirect npm cache to tmpfs so it doesn't fill the persistent volume
+    npm_config_cache: '/tmp/npm-cache',
     // Credential proxy on loopback (subprocess runs on host, not in container)
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`,
     // Placeholder credential so the SDK picks the right auth mode

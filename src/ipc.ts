@@ -83,21 +83,36 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     { chatJid: data.chatJid, sourceGroup },
                     'monitorOnly guard: IPC message to spy group blocked',
                   );
-                } else if (
-                  isMain ||
-                  targetGroup?.isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
-                  await deps.sendMessage(data.chatJid, data.text);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
                 } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC message attempt blocked',
-                  );
+                  // Find the source registered group to check its notifyCC whitelist
+                  const sourceRegisteredGroup = Object.values(
+                    registeredGroups,
+                  ).find((g) => g.folder === sourceGroup);
+                  const isCCAuthorized =
+                    sourceRegisteredGroup?.notifyCC?.includes(data.chatJid) ===
+                    true;
+
+                  if (
+                    isMain ||
+                    targetGroup?.isMain ||
+                    (targetGroup && targetGroup.folder === sourceGroup) ||
+                    isCCAuthorized
+                  ) {
+                    await deps.sendMessage(data.chatJid, data.text);
+                    logger.info(
+                      {
+                        chatJid: data.chatJid,
+                        sourceGroup,
+                        viaCC: isCCAuthorized,
+                      },
+                      'IPC message sent',
+                    );
+                  } else {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'Unauthorized IPC message attempt blocked',
+                    );
+                  }
                 }
               }
               fs.unlinkSync(filePath);
@@ -180,6 +195,7 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     monitorOnly?: boolean;
+    notifyCC?: string[];
     containerConfig?: RegisteredGroup['containerConfig'];
   },
   sourceGroup: string, // Verified identity from IPC directory
@@ -461,6 +477,7 @@ export async function processTaskIpc(
           containerConfig: data.containerConfig,
           requiresTrigger: data.requiresTrigger,
           monitorOnly: data.monitorOnly,
+          notifyCC: data.notifyCC,
           isMain: existingGroup?.isMain,
         });
       } else {

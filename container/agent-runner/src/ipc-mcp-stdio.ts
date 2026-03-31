@@ -24,6 +24,11 @@ const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
 const mainChatJid = process.env.NANOCLAW_MAIN_JID;
+// Pre-approved CC JIDs set by the host from the registered group's notifyCC whitelist.
+// The agent cannot add arbitrary JIDs here — the list is injected at container launch time.
+const ccJids: string[] = process.env.NANOCLAW_CC_JIDS
+  ? process.env.NANOCLAW_CC_JIDS.split(',').map((j) => j.trim()).filter(Boolean)
+  : [];
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -51,21 +56,29 @@ server.tool(
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
     to_main: z.boolean().optional().describe('Send to the main group instead of this group. Use this when you want to notify the main chat from a side group (e.g. links group).'),
+    cc: z.boolean().optional().describe('Also send to pre-configured CC recipients. Recipients are defined at group registration time — you cannot target arbitrary JIDs. No-op if no CC recipients are configured.'),
   },
   async (args) => {
     const targetJid = (args.to_main && mainChatJid) ? mainChatJid : chatJid;
-    const data: Record<string, string | undefined> = {
-      type: 'message',
-      chatJid: targetJid,
+    const base = {
+      type: 'message' as const,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
     };
 
-    writeIpcFile(MESSAGES_DIR, data);
+    writeIpcFile(MESSAGES_DIR, { ...base, chatJid: targetJid });
 
-    return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+    // Send to pre-approved CC JIDs (whitelist enforced again at the IPC layer on the host)
+    if (args.cc && ccJids.length > 0) {
+      for (const ccJid of ccJids) {
+        writeIpcFile(MESSAGES_DIR, { ...base, chatJid: ccJid });
+      }
+    }
+
+    const ccNote = args.cc && ccJids.length > 0 ? ` + CC to ${ccJids.length} recipient(s).` : '';
+    return { content: [{ type: 'text' as const, text: `Message sent.${ccNote}` }] };
   },
 );
 
@@ -318,6 +331,9 @@ Use available_groups.json to find the JID for a group. The folder name must be c
     name: z.string().describe('Display name for the group'),
     folder: z.string().describe('Channel-prefixed folder name (e.g., "whatsapp_family-chat", "telegram_dev-team")'),
     trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
+    requiresTrigger: z.boolean().optional().describe('Whether messages must include the trigger word to wake the agent. Default true. Set false for spy/monitor groups so every message is evaluated.'),
+    monitorOnly: z.boolean().optional().describe('Set true for spy/listen-only groups. The bot will NEVER send any message back to this group — enforced at both code and agent level.'),
+    notifyCC: z.array(z.string()).optional().describe('For spy/monitor groups: additional JIDs to CC on notifications. These are hard-whitelisted — the agent can only send to these JIDs, not arbitrary ones. E.g. ["972501234567@s.whatsapp.net", "120363336345536173@g.us"]'),
   },
   async (args) => {
     if (!isMain) {
@@ -333,6 +349,9 @@ Use available_groups.json to find the JID for a group. The folder name must be c
       name: args.name,
       folder: args.folder,
       trigger: args.trigger,
+      requiresTrigger: args.requiresTrigger,
+      monitorOnly: args.monitorOnly,
+      notifyCC: args.notifyCC,
       timestamp: new Date().toISOString(),
     };
 
