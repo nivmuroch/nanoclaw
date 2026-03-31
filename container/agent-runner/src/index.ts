@@ -30,6 +30,7 @@ interface ContainerInput {
   assistantName?: string;
   script?: string;
   mainChatJid?: string;
+  ccJids?: string[];
 }
 
 interface ContainerOutput {
