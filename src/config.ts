@@ -62,6 +62,16 @@ export const MAX_MESSAGES_PER_PROMPT = Math.max(
 );
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
+// Spy/monitorOnly group batching: accumulate messages for N ms before running one LLM call
+export const SPY_BATCH_INTERVAL_MS = parseInt(
+  process.env.SPY_BATCH_INTERVAL_MS || String(3 * 60 * 1000),
+  10,
+);
+// Max input chars per spy batch — oldest messages are dropped if exceeded (~5k tokens)
+export const SPY_MAX_INPUT_CHARS = parseInt(
+  process.env.SPY_MAX_INPUT_CHARS || '20000',
+  10,
+);
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,

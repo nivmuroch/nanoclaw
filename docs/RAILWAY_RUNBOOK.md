@@ -170,11 +170,12 @@ This is a missing optional Baileys dependency. Link previews in messages don't w
 
 ### Groups created dynamically on the Railway volume
 
-These are created by the bot at runtime via IPC `register_group`. They exist in `/app/store/groups/` on the Railway volume (NOT in the repo). To inspect them you need Railway shell access.
+These are created by the bot at runtime via IPC `register_group`. They exist in `/app/store/groups/` on the Railway volume (NOT in the repo).
 
 | Folder | Purpose | monitorOnly |
 |--------|---------|-------------|
 | `whatsapp_dollar-journey/` | Spy monitor: המסע לדולר הראשון | ✅ YES |
+| `whatsapp_ravaha/` | Spy monitor: רווחה אחד בשביל השניה | ✅ YES |
 
 **Important:** When the spy group was first created, the `monitor_only` column did not exist in the DB schema. The `db.ts` migration was added in commit `23409fb`. On first restart after that commit, the column is added automatically. Re-register the spy group from the main group to ensure `monitorOnly: true` is persisted.
 
@@ -203,6 +204,11 @@ groupCount: N    ← how many registered groups loaded from DB
 railway logs | grep '"group":'
 ```
 
+### Active containers (shows which groups had recent messages)
+```bash
+railway logs --tail 500 | grep 'nanoclaw-whatsapp-'
+```
+
 ### IPC activity (what groups are writing IPC messages)
 ```bash
 railway logs | grep 'sourceGroup'
@@ -212,6 +218,29 @@ railway logs | grep 'sourceGroup'
 ```bash
 railway logs | grep 'monitorOnly guard'
 ```
+
+### Spy batch timer activity
+```bash
+railway logs | grep 'Spy batch'
+```
+
+---
+
+## Querying the Production Database
+
+`railway run` and `railway shell` both run **locally** — they cannot access the Railway container filesystem.
+
+Use `railway ssh` to run a command directly on the container:
+
+```bash
+# List all registered groups with their flags
+railway ssh "node -e \"const D=require('better-sqlite3')('/app/store/messages.db');console.log(JSON.stringify(D.prepare('SELECT name,jid,monitor_only,require_trigger,is_main FROM registered_groups').all(),null,2))\""
+```
+
+**Important notes:**
+- Table is `registered_groups` (not `groups`)
+- `sqlite3` binary is NOT installed on the container — use `better-sqlite3` via node
+- `railway ssh 'command'` passes the command as an argument and exits (non-interactive)
 
 ---
 
