@@ -18,6 +18,16 @@ Your output is sent to the user or group.
 
 You also have `mcp__nanoclaw__send_message` which sends a message immediately while you're still working. This is useful when you want to acknowledge a request before starting longer work.
 
+### Sending to Other Groups — Approval Gate
+
+When the user asks you to send a message to another group or person:
+
+1. **Do NOT ask the user for confirmation first** — the system has a built-in approval gate that automatically asks the owner before delivering.
+2. **Call `send_message` directly** with the target JID (`to_jid` parameter) and the message text.
+3. **Do NOT say the message was "sent"** — after calling `send_message`, tell the user something like "I've submitted the message for approval" or "queued for delivery". The gate will ask them to confirm before it actually goes out.
+
+The gate will show the user the message preview and ask them to approve or deny it. They can reply with `yes` / `approve` (or in Hebrew: `כן` / `אשר`) to send, or `no` / `deny` (`לא` / `דחה`) to cancel.
+
 ### Internal thoughts
 
 If part of your output is internal reasoning rather than something for the user, wrap it in `<internal>` tags:

@@ -336,6 +336,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       // Hard guard: monitorOnly groups never receive messages from the bot
       if (text && !group.monitorOnly) {
+        if (!approvalGate) throw new Error('approvalGate not initialized');
         await approvalGate.send(chatJid, text);
         outputSentToUser = true;
       } else if (text && group.monitorOnly) {
@@ -782,7 +783,10 @@ async function main(): Promise<void> {
       return ch.sendMessage(jid, text);
     },
     () => Object.entries(registeredGroups).find(([, g]) => g.isMain)?.[0],
-    (jid) => registeredGroups[jid]?.name ?? jid,
+    (jid) =>
+      registeredGroups[jid]?.name ??
+      getAllChats().find((c) => c.jid === jid)?.name ??
+      jid,
   );
 
   // Start subsystems (independently of connection handler)

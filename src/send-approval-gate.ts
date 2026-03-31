@@ -14,6 +14,10 @@ interface PendingApproval {
 
 // Matches: "approve abc123" or "deny abc123"
 export const APPROVAL_COMMAND_PATTERN = /^(approve|deny)\s+([a-f0-9]{6})$/i;
+// Matches shorthand: "approve" / "yes" / "כן" / "אשר" / "שלח" (approve most-recent if single pending)
+export const APPROVE_SHORTHAND = /^(approve|yes|כן|אשר|מאשר|שלח)$/i;
+// Matches shorthand: "deny" / "no" / "לא" / "דחה" (deny most-recent if single pending)
+export const DENY_SHORTHAND = /^(deny|no|לא|דחה)$/i;
 // Matches: "pending"
 export const PENDING_LIST_PATTERN = /^pending$/i;
 
@@ -94,7 +98,7 @@ export class SendApprovalGate {
       const preview = text.length > 120 ? `${text.slice(0, 120)}…` : text;
       await this.rawSend(
         currentMainJid,
-        `⏰ *[${id}] expired* — message to "${groupName}" [${shortJid(jid)}] was discarded.\n\nWas: ${preview}`,
+        `⏰ *[${id}] expired* — message to "${groupName}" (${shortJid(jid)}) was discarded.\n\nWas: ${preview}`,
       ).catch(() => {});
     }, APPROVAL_TIMEOUT_MS);
 
@@ -106,8 +110,10 @@ export class SendApprovalGate {
       timeoutHandle,
     });
 
-    // Show both name AND JID so the owner can verify the exact destination
-    const targetLabel = `${groupName} (${shortJid(jid)})`;
+    // Show name + short JID for verification. If no name is registered,
+    // just show the short JID to avoid showing "raw-jid (short-jid)" redundantly.
+    const targetLabel =
+      groupName === jid ? shortJid(jid) : `${groupName} (${shortJid(jid)})`;
     const preview =
       `🔐 *Send Approval Required*\n` +
       `*ID:* \`${id}\`\n` +
@@ -147,7 +153,8 @@ export class SendApprovalGate {
           const name = this.getGroupName(p.targetJid);
           const snippet =
             p.text.length > 60 ? `${p.text.slice(0, 60)}…` : p.text;
-          return `• \`${p.id}\` → ${name} [${shortJid(p.targetJid)}] (${ageS}s ago): ${snippet}`;
+          const label = name === p.targetJid ? shortJid(p.targetJid) : `${name} (${shortJid(p.targetJid)})`;
+          return `• \`${p.id}\` → ${label} (${ageS}s ago): ${snippet}`;
         });
         await this.rawSend(
           mainJid,
@@ -155,6 +162,25 @@ export class SendApprovalGate {
         );
       }
       return true;
+    }
+
+    // Shorthand: "yes" / "approve" / "כן" etc. — works only when exactly one message is pending
+    if (APPROVE_SHORTHAND.test(trimmed) || DENY_SHORTHAND.test(trimmed)) {
+      if (this.pending.size === 0) {
+        await this.rawSend(mainJid, '❓ No pending approvals.');
+        return true;
+      }
+      if (this.pending.size > 1) {
+        await this.rawSend(
+          mainJid,
+          `⚠️ ${this.pending.size} messages pending — use \`approve <id>\` or \`deny <id>\` to be specific. Type \`pending\` to list them.`,
+        );
+        return true;
+      }
+      // Exactly one pending — apply shorthand to it
+      const [singlePending] = this.pending.values();
+      const isApprove = APPROVE_SHORTHAND.test(trimmed);
+      return this._resolve(singlePending.id, isApprove ? 'approve' : 'deny', mainJid);
     }
 
     const match = trimmed.match(APPROVAL_COMMAND_PATTERN);
@@ -169,20 +195,35 @@ export class SendApprovalGate {
       return true;
     }
 
+    return this._resolve(id, action, mainJid);
+  }
+
+  private async _resolve(
+    id: string,
+    action: string,
+    mainJid: string,
+  ): Promise<true> {
+    const pending = this.pending.get(id);
+    if (!pending) return true;
+
     clearTimeout(pending.timeoutHandle);
     this.pending.delete(id);
+
+    const pendingName = this.getGroupName(pending.targetJid);
+    const targetLabel =
+      pendingName === pending.targetJid
+        ? shortJid(pending.targetJid)
+        : `"${pendingName}" (${shortJid(pending.targetJid)})`;
 
     if (action.toLowerCase() === 'approve') {
       logger.info(
         { id, targetJid: pending.targetJid },
         'Approval gate: approved, sending',
       );
-      const targetLabel = `"${this.getGroupName(pending.targetJid)}" [${shortJid(pending.targetJid)}]`;
       try {
         await this.rawSend(pending.targetJid, pending.text);
         await this.rawSend(mainJid, `✅ \`[${id}]\` sent to ${targetLabel}`);
       } catch (err) {
-        // Target JID unreachable (no channel registered, disconnected, etc.)
         logger.error(
           { id, targetJid: pending.targetJid, err },
           'Approval gate: send failed after approval',

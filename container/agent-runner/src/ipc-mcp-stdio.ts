@@ -79,7 +79,7 @@ server.tool(
     }
 
     const ccNote = args.cc && ccJids.length > 0 ? ` + CC to ${ccJids.length} recipient(s).` : '';
-    return { content: [{ type: 'text' as const, text: `Message sent.${ccNote}` }] };
+    return { content: [{ type: 'text' as const, text: `Message queued for delivery.${ccNote} Do NOT say the message was sent — it may require owner approval before being delivered.` }] };
   },
 );
 
