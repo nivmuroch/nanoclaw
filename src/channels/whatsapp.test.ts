@@ -160,6 +160,7 @@ describe('WhatsAppChannel', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   /**
@@ -985,6 +986,68 @@ describe('WhatsAppChannel', () => {
       await expect(
         channel.setTyping('test@g.us', true),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  // --- Stale session cleanup ---
+
+  describe('stale session cleanup', () => {
+    it('preserves own LID session file while deleting foreign session files', async () => {
+      // Get the real fs to set up test fixtures (the mock overrides mkdirSync/existsSync)
+      const realFs = await vi.importActual<typeof import('fs')>('fs');
+
+      const authDir = '/tmp/nanoclaw-test-store/auth';
+
+      // Create the auth directory with real fs
+      realFs.mkdirSync(authDir, { recursive: true });
+
+      // Write fake creds.json with me.lid.user = "111222333"
+      const creds = { me: { lid: { user: '111222333' } } };
+      realFs.writeFileSync(
+        `${authDir}/creds.json`,
+        JSON.stringify(creds),
+        'utf-8',
+      );
+
+      // Write own LID session file (should be preserved)
+      const ownSessionFile = 'session-111222333-13@lid';
+      realFs.writeFileSync(`${authDir}/${ownSessionFile}`, '{}', 'utf-8');
+
+      // Write foreign session file (should be deleted)
+      const foreignSessionFile = 'session-other-999@s.whatsapp.net';
+      realFs.writeFileSync(
+        `${authDir}/${foreignSessionFile}`,
+        '{}',
+        'utf-8',
+      );
+
+      try {
+        const opts = createTestOpts();
+        const channel = new WhatsAppChannel(opts);
+
+        await connectChannel(channel);
+
+        // Own LID session must be preserved
+        expect(realFs.existsSync(`${authDir}/${ownSessionFile}`)).toBe(true);
+
+        // Foreign session must be deleted
+        expect(realFs.existsSync(`${authDir}/${foreignSessionFile}`)).toBe(
+          false,
+        );
+      } finally {
+        // Clean up test fixtures
+        try {
+          realFs.rmSync(`${authDir}/${ownSessionFile}`, { force: true } as any);
+        } catch {}
+        try {
+          realFs.rmSync(`${authDir}/${foreignSessionFile}`, {
+            force: true,
+          } as any);
+        } catch {}
+        try {
+          realFs.rmSync(`${authDir}/creds.json`, { force: true } as any);
+        } catch {}
+      }
     });
   });
 

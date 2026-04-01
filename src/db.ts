@@ -73,6 +73,13 @@ function createSchema(database: Database.Database): void {
       group_folder TEXT PRIMARY KEY,
       session_id TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS pending_approvals (
+      id TEXT PRIMARY KEY,
+      target_jid TEXT NOT NULL,
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -761,4 +768,39 @@ function migrateJsonState(): void {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pending approvals
+// ---------------------------------------------------------------------------
+
+export interface PendingApprovalRow {
+  id: string;
+  target_jid: string;
+  text: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export function insertPendingApproval(
+  id: string,
+  targetJid: string,
+  text: string,
+  createdAt: Date,
+  expiresAt: Date,
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO pending_approvals (id, target_jid, text, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, targetJid, text, createdAt.toISOString(), expiresAt.toISOString());
+}
+
+export function deletePendingApproval(id: string): void {
+  db.prepare(`DELETE FROM pending_approvals WHERE id = ?`).run(id);
+}
+
+export function getAllPendingApprovals(): PendingApprovalRow[] {
+  return db
+    .prepare(`SELECT * FROM pending_approvals`)
+    .all() as PendingApprovalRow[];
 }

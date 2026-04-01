@@ -47,6 +47,9 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
+  insertPendingApproval,
+  deletePendingApproval,
+  getAllPendingApprovals,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -249,10 +252,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Hard approval gate: if this is the main group and the last user message
   // is an approval command (approve/deny/pending), handle it and skip agent.
+  // Note: in a self-chat (Note to Self), ALL messages have is_from_me=1,
+  // so we filter on !is_bot_message only — not !is_from_me.
   if (isMainGroup && approvalGate) {
     const lastUserMsg = [...missedMessages]
       .reverse()
-      .find((m) => !m.is_from_me && !m.is_bot_message);
+      .find((m) => !m.is_bot_message);
     if (lastUserMsg) {
       const handled = await approvalGate.handleCommand(
         chatJid,
@@ -525,10 +530,12 @@ async function startMessageLoop(): Promise<void> {
 
           // Hard approval gate: intercept approval commands from main group
           // before piping to an active container, so the agent never sees them.
+          // Note: in a self-chat (Note to Self), ALL messages have is_from_me=1,
+          // so we filter on !is_bot_message only — not !is_from_me.
           if (isMainGroup && approvalGate) {
             const lastUserMsg = [...groupMessages]
               .reverse()
-              .find((m) => !m.is_from_me && !m.is_bot_message);
+              .find((m) => !m.is_bot_message);
             if (lastUserMsg) {
               const handled = await approvalGate.handleCommand(
                 chatJid,
@@ -787,7 +794,20 @@ async function main(): Promise<void> {
       registeredGroups[jid]?.name ??
       getAllChats().find((c) => c.jid === jid)?.name ??
       jid,
+    insertPendingApproval,
+    deletePendingApproval,
+    (jid) => jid in registeredGroups,
   );
+
+  // Restore pending approvals that survived a restart
+  const storedApprovals = getAllPendingApprovals();
+  if (storedApprovals.length > 0) {
+    logger.info(
+      { count: storedApprovals.length },
+      'Rehydrating pending approvals from DB',
+    );
+    await approvalGate.rehydrate(storedApprovals);
+  }
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({

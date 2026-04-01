@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 
 import { logger } from './logger.js';
+import type { PendingApprovalRow } from './db.js';
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -20,6 +21,10 @@ export const APPROVE_SHORTHAND = /^(approve|yes|כן|אשר|מאשר|שלח)$/i;
 export const DENY_SHORTHAND = /^(deny|no|לא|דחה)$/i;
 // Matches: "pending"
 export const PENDING_LIST_PATTERN = /^pending$/i;
+// Matches: "register-jid <jid> <name>"
+export const REGISTER_JID_PATTERN = /^register-jid\s+(\S+)\s+(.+)$/i;
+// Matches: "deny-jid <jid>"
+export const DENY_JID_PATTERN = /^deny-jid\s+(\S+)$/i;
 
 /**
  * Returns a short, human-readable identifier for a JID so the user can
@@ -52,6 +57,9 @@ function shortJid(jid: string): string {
  *
  * Messages addressed to the main group itself always bypass the gate so that
  * approval previews can always reach the owner.
+ *
+ * Pending approvals are persisted to SQLite via optional callbacks so they
+ * survive restarts. On startup, call rehydrate() to restore in-memory state.
  */
 export class SendApprovalGate {
   private pending = new Map<string, PendingApproval>();
@@ -63,6 +71,18 @@ export class SendApprovalGate {
     private getMainJid: () => string | undefined,
     /** Returns a human-readable name for a JID */
     private getGroupName: (jid: string) => string,
+    /** Persist a new pending approval to durable storage (optional) */
+    private persistAdd?: (
+      id: string,
+      targetJid: string,
+      text: string,
+      createdAt: Date,
+      expiresAt: Date,
+    ) => void,
+    /** Remove a pending approval from durable storage (optional) */
+    private persistRemove?: (id: string) => void,
+    /** Returns true if a JID is a registered group/contact (optional) */
+    private isRegistered?: (jid: string) => boolean,
   ) {}
 
   /**
@@ -77,8 +97,23 @@ export class SendApprovalGate {
       return this.rawSend(jid, text);
     }
 
+    // Block sends to unregistered JIDs — prompt user to register first
+    if (this.isRegistered && !this.isRegistered(jid)) {
+      logger.warn({ jid }, 'Approval gate: blocked send to unregistered JID');
+      await this.rawSend(
+        mainJid,
+        `⚠️ *Send blocked* — \`${shortJid(jid)}\` is not a registered group or contact.\n\n` +
+          `Register it first:\n` +
+          `✅ \`register-jid ${jid} <name>\`\n` +
+          `❌ \`deny-jid ${jid}\``,
+      );
+      return;
+    }
+
     const id = crypto.randomBytes(3).toString('hex');
     const groupName = this.getGroupName(jid);
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + APPROVAL_TIMEOUT_MS);
 
     logger.info(
       { id, targetJid: jid, groupName },
@@ -88,6 +123,7 @@ export class SendApprovalGate {
     const timeoutHandle = setTimeout(async () => {
       if (!this.pending.has(id)) return;
       this.pending.delete(id);
+      this.persistRemove?.(id);
       logger.warn(
         { id, targetJid: jid },
         'Approval gate: message expired, discarded',
@@ -106,9 +142,11 @@ export class SendApprovalGate {
       id,
       targetJid: jid,
       text,
-      createdAt: new Date(),
+      createdAt,
       timeoutHandle,
     });
+
+    this.persistAdd?.(id, jid, text, createdAt, expiresAt);
 
     // Show name + short JID for verification. If no name is registered,
     // just show the short JID to avoid showing "raw-jid (short-jid)" redundantly.
@@ -123,6 +161,80 @@ export class SendApprovalGate {
       `❌ \`deny ${id}\`\n` +
       `📋 \`pending\` — list all`;
     await this.rawSend(mainJid, preview);
+  }
+
+  /**
+   * Restore pending approvals from durable storage after a restart.
+   * Re-sends approval previews to the main group for any non-expired entries.
+   * Should be called once after the gate is initialized.
+   */
+  async rehydrate(rows: PendingApprovalRow[]): Promise<void> {
+    const mainJid = this.getMainJid();
+    const now = Date.now();
+
+    for (const row of rows) {
+      const expiresAt = new Date(row.expires_at);
+      const remainingMs = expiresAt.getTime() - now;
+
+      if (remainingMs <= 0) {
+        // Already expired — clean up from DB
+        this.persistRemove?.(row.id);
+        continue;
+      }
+
+      const createdAt = new Date(row.created_at);
+      const groupName = this.getGroupName(row.target_jid);
+
+      const timeoutHandle = setTimeout(async () => {
+        if (!this.pending.has(row.id)) return;
+        this.pending.delete(row.id);
+        this.persistRemove?.(row.id);
+        logger.warn(
+          { id: row.id, targetJid: row.target_jid },
+          'Approval gate: rehydrated message expired, discarded',
+        );
+        const currentMainJid = this.getMainJid();
+        if (!currentMainJid) return;
+        const preview =
+          row.text.length > 120 ? `${row.text.slice(0, 120)}…` : row.text;
+        await this.rawSend(
+          currentMainJid,
+          `⏰ *[${row.id}] expired* — message to "${groupName}" (${shortJid(row.target_jid)}) was discarded.\n\nWas: ${preview}`,
+        ).catch(() => {});
+      }, remainingMs);
+
+      this.pending.set(row.id, {
+        id: row.id,
+        targetJid: row.target_jid,
+        text: row.text,
+        createdAt,
+        timeoutHandle,
+      });
+
+      // Re-send approval preview so the owner knows there's a pending message
+      if (mainJid) {
+        const targetLabel =
+          groupName === row.target_jid
+            ? shortJid(row.target_jid)
+            : `${groupName} (${shortJid(row.target_jid)})`;
+        const preview =
+          `🔐 *Send Approval Required* _(restored after restart)_\n` +
+          `*ID:* \`${row.id}\`\n` +
+          `*To:* ${targetLabel}\n\n` +
+          `${row.text}\n\n` +
+          `✅ \`approve ${row.id}\`\n` +
+          `❌ \`deny ${row.id}\`\n` +
+          `📋 \`pending\` — list all`;
+        await this.rawSend(mainJid, preview).catch(() => {});
+      }
+    }
+
+    if (rows.length > 0) {
+      logger.info(
+        { total: rows.length, rehydrated: this.pending.size },
+        'Approval gate: rehydrated pending approvals',
+      );
+    }
   }
 
   /**
@@ -141,6 +253,21 @@ export class SendApprovalGate {
         { fromJid, mainJid },
         'Approval gate: command rejected — not from main group',
       );
+      return false;
+    }
+
+    // deny-jid: cancel a blocked send — handled here, not by the agent
+    const denyJidMatch = trimmed.match(DENY_JID_PATTERN);
+    if (denyJidMatch) {
+      await this.rawSend(
+        mainJid,
+        `❌ Send to \`${shortJid(denyJidMatch[1])}\` cancelled.`,
+      );
+      return true;
+    }
+
+    // register-jid: pass through to agent so it can call register_group MCP tool
+    if (REGISTER_JID_PATTERN.test(trimmed)) {
       return false;
     }
 
@@ -215,6 +342,7 @@ export class SendApprovalGate {
 
     clearTimeout(pending.timeoutHandle);
     this.pending.delete(id);
+    this.persistRemove?.(id);
 
     const pendingName = this.getGroupName(pending.targetJid);
     const targetLabel =

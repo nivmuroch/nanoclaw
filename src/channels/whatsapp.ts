@@ -94,20 +94,38 @@ export class WhatsAppChannel implements Channel {
     // exchange on the first message, which prevents "Waiting for this message" on the phone.
     // Keep creds.json — that's the device registration, not session state.
     if (onFirstOpen) {
-      const staleFiles = fs
-        .readdirSync(authDir)
-        .filter(
-          (f) =>
-            f.startsWith('session-') ||
-            f.startsWith('sender-key-') ||
-            f.startsWith('app-state-sync-key-'),
-        );
+      let ownLidPrefix: string | undefined;
+      try {
+        const credsRaw = fs.readFileSync(path.join(authDir, 'creds.json'), 'utf-8');
+        const creds = JSON.parse(credsRaw);
+        const lidUser = creds?.me?.lid?.user;
+        if (lidUser) {
+          // session file name: fixFileName(`session-${lidUser}:*@lid`) → starts with `session-${lidUser}-`
+          ownLidPrefix = `session-${lidUser}-`;
+        }
+      } catch {
+        // creds.json doesn't exist yet (first boot) — no session to preserve
+      }
+
+      let authFiles: string[] = [];
+      try {
+        authFiles = fs.readdirSync(authDir);
+      } catch {
+        // auth dir doesn't exist yet (first boot) — nothing to clean
+      }
+      const staleFiles = authFiles.filter(
+        (f) =>
+          (f.startsWith('session-') ||
+           f.startsWith('sender-key-') ||
+           f.startsWith('app-state-sync-key-')) &&
+          !(ownLidPrefix && f.startsWith(ownLidPrefix)),
+      );
       for (const f of staleFiles) {
         fs.rmSync(path.join(authDir, f));
       }
       if (staleFiles.length > 0) {
         logger.info(
-          { count: staleFiles.length },
+          { count: staleFiles.length, preservedOwnLid: !!ownLidPrefix },
           'Cleared stale signal sessions on startup',
         );
       }
