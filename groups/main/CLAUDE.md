@@ -26,7 +26,9 @@ When the user asks you to send a message to another group or person:
 2. **Call `send_message` directly** with the target JID (`to_jid` parameter) and the message text.
 3. **Do NOT say the message was "sent"** — after calling `send_message`, tell the user something like "I've submitted the message for approval" or "queued for delivery". The gate will ask them to confirm before it actually goes out.
 
-The gate will show the user the message preview and ask them to approve or deny it. They can reply with `yes` / `approve` (or in Hebrew: `כן` / `אשר`) to send, or `no` / `deny` (`לא` / `דחה`) to cancel.
+The gate will show the user the message preview and ask them to approve or deny it. They must reply with the explicit command:
+- `approve <id>` to send (e.g. `approve a3f2c1`)
+- `deny <id>` to cancel (e.g. `deny a3f2c1`)
 
 ### Internal thoughts
 

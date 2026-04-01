@@ -15,10 +15,8 @@ interface PendingApproval {
 
 // Matches: "approve abc123" or "deny abc123"
 export const APPROVAL_COMMAND_PATTERN = /^(approve|deny)\s+([a-f0-9]{6})$/i;
-// Matches shorthand: "approve" / "yes" / "כן" / "אשר" / "שלח" (approve most-recent if single pending)
-export const APPROVE_SHORTHAND = /^(approve|yes|כן|אשר|מאשר|שלח)$/i;
-// Matches shorthand: "deny" / "no" / "לא" / "דחה" (deny most-recent if single pending)
-export const DENY_SHORTHAND = /^(deny|no|לא|דחה)$/i;
+// Shorthands removed — only explicit "approve <id>" / "deny <id>" are intercepted.
+// Ambiguous words like "yes"/"no" pass through to the agent to avoid false positives.
 // Matches: "pending"
 export const PENDING_LIST_PATTERN = /^pending$/i;
 // Matches: "register-jid <jid> <name>"
@@ -294,28 +292,6 @@ export class SendApprovalGate {
       return true;
     }
 
-    // Shorthand: "yes" / "approve" / "כן" etc. — works only when exactly one message is pending
-    if (APPROVE_SHORTHAND.test(trimmed) || DENY_SHORTHAND.test(trimmed)) {
-      if (this.pending.size === 0) {
-        await this.rawSend(mainJid, '❓ No pending approvals.');
-        return true;
-      }
-      if (this.pending.size > 1) {
-        await this.rawSend(
-          mainJid,
-          `⚠️ ${this.pending.size} messages pending — use \`approve <id>\` or \`deny <id>\` to be specific. Type \`pending\` to list them.`,
-        );
-        return true;
-      }
-      // Exactly one pending — apply shorthand to it
-      const [singlePending] = this.pending.values();
-      const isApprove = APPROVE_SHORTHAND.test(trimmed);
-      return this._resolve(
-        singlePending.id,
-        isApprove ? 'approve' : 'deny',
-        mainJid,
-      );
-    }
 
     const match = trimmed.match(APPROVAL_COMMAND_PATTERN);
     if (!match) return false;
