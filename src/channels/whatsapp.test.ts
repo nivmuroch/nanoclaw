@@ -1015,11 +1015,7 @@ describe('WhatsAppChannel', () => {
 
       // Write foreign session file (should be deleted)
       const foreignSessionFile = 'session-other-999@s.whatsapp.net';
-      realFs.writeFileSync(
-        `${authDir}/${foreignSessionFile}`,
-        '{}',
-        'utf-8',
-      );
+      realFs.writeFileSync(`${authDir}/${foreignSessionFile}`, '{}', 'utf-8');
 
       try {
         const opts = createTestOpts();

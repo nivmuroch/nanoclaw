@@ -96,7 +96,10 @@ export class WhatsAppChannel implements Channel {
     if (onFirstOpen) {
       let ownLidPrefix: string | undefined;
       try {
-        const credsRaw = fs.readFileSync(path.join(authDir, 'creds.json'), 'utf-8');
+        const credsRaw = fs.readFileSync(
+          path.join(authDir, 'creds.json'),
+          'utf-8',
+        );
         const creds = JSON.parse(credsRaw);
         const lidUser = creds?.me?.lid?.user;
         if (lidUser) {
@@ -116,8 +119,8 @@ export class WhatsAppChannel implements Channel {
       const staleFiles = authFiles.filter(
         (f) =>
           (f.startsWith('session-') ||
-           f.startsWith('sender-key-') ||
-           f.startsWith('app-state-sync-key-')) &&
+            f.startsWith('sender-key-') ||
+            f.startsWith('app-state-sync-key-')) &&
           !(ownLidPrefix && f.startsWith(ownLidPrefix)),
       );
       for (const f of staleFiles) {
