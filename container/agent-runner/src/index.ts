@@ -31,18 +31,7 @@ interface ContainerInput {
   script?: string;
   mainChatJid?: string;
   ccJids?: string[];
-  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
 }
-
-interface ImageContentBlock {
-  type: 'image';
-  source: { type: 'base64'; media_type: string; data: string };
-}
-interface TextContentBlock {
-  type: 'text';
-  text: string;
-}
-type ContentBlock = ImageContentBlock | TextContentBlock;
 
 interface ContainerOutput {
   status: 'success' | 'error';
@@ -64,7 +53,7 @@ interface SessionsIndex {
 
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string | ContentBlock[] };
+  message: { role: 'user'; content: string };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -89,16 +78,6 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
-      parent_tool_use_id: null,
-      session_id: '',
-    });
-    this.waiting?.();
-  }
-
-  pushMultimodal(content: ContentBlock[]): void {
-    this.queue.push({
-      type: 'user',
-      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -367,23 +346,6 @@ async function runQuery(
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
-
-  // Load image attachments and send as multimodal content blocks
-  if (containerInput.imageAttachments?.length) {
-    const blocks: ContentBlock[] = [];
-    for (const img of containerInput.imageAttachments) {
-      const imgPath = path.join('/workspace/group', img.relativePath);
-      try {
-        const data = fs.readFileSync(imgPath).toString('base64');
-        blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data } });
-      } catch (err) {
-        log(`Failed to load image: ${imgPath}`);
-      }
-    }
-    if (blocks.length > 0) {
-      stream.pushMultimodal(blocks);
-    }
-  }
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;

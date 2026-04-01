@@ -292,6 +292,7 @@ export class SendApprovalGate {
       return true;
     }
 
+
     const match = trimmed.match(APPROVAL_COMMAND_PATTERN);
     if (!match) return false;
 
