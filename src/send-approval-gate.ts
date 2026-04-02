@@ -296,14 +296,16 @@ export class SendApprovalGate {
       return true;
     }
 
-
     // Explicit "approve/מאשר <id>" or "deny/מסרב <id>" — resolve directly.
     const exactMatch = trimmed.match(APPROVAL_COMMAND_PATTERN);
     if (exactMatch) {
       const [, action, rawId] = exactMatch;
       const id = rawId.toLowerCase();
       if (!this.pending.has(id)) {
-        await this.rawSend(mainJid, `❓ No pending approval with ID \`${id}\`.`);
+        await this.rawSend(
+          mainJid,
+          `❓ No pending approval with ID \`${id}\`.`,
+        );
         return true;
       }
       const normalizedAction = APPROVE_WORDS.has(action.toLowerCase())
