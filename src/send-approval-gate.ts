@@ -13,16 +13,19 @@ interface PendingApproval {
   timeoutHandle: ReturnType<typeof setTimeout>;
 }
 
-// Matches: "approve abc123" or "deny abc123"
-export const APPROVAL_COMMAND_PATTERN = /^(approve|deny)\s+([a-f0-9]{6})$/i;
-// Shorthands removed — only explicit "approve <id>" / "deny <id>" are intercepted.
-// Ambiguous words like "yes"/"no" pass through to the agent to avoid false positives.
+// Matches: "approve abc123", "deny abc123", "מאשר abc123", "מסרב/דחה abc123"
+export const APPROVAL_COMMAND_PATTERN =
+  /^(approve|deny|מאשר|מסרב|דחה)\s+([a-f0-9]{6})$/i;
+// Matches bare approval/denial intent (no ID) — only safe when exactly 1 pending.
+export const APPROVAL_SHORTHAND_PATTERN = /^(approve|deny|מאשר|מסרב|דחה)$/i;
 // Matches: "pending"
 export const PENDING_LIST_PATTERN = /^pending$/i;
 // Matches: "register-jid <jid> <name>"
 export const REGISTER_JID_PATTERN = /^register-jid\s+(\S+)\s+(.+)$/i;
 // Matches: "deny-jid <jid>"
 export const DENY_JID_PATTERN = /^deny-jid\s+(\S+)$/i;
+
+const APPROVE_WORDS = new Set(['approve', 'מאשר']);
 
 /**
  * Returns a short, human-readable identifier for a JID so the user can
@@ -150,14 +153,16 @@ export class SendApprovalGate {
     // just show the short JID to avoid showing "raw-jid (short-jid)" redundantly.
     const targetLabel =
       groupName === jid ? shortJid(jid) : `${groupName} (${shortJid(jid)})`;
+    const pendingHint =
+      this.pending.size > 1
+        ? `Reply *approve ${id}* or *deny ${id}*\n📋 \`pending\` — list all`
+        : `Reply *approve* or *deny*`;
     const preview =
       `🔐 *Send Approval Required*\n` +
       `*ID:* \`${id}\`\n` +
       `*To:* ${targetLabel}\n\n` +
       `${text}\n\n` +
-      `✅ \`approve ${id}\`\n` +
-      `❌ \`deny ${id}\`\n` +
-      `📋 \`pending\` — list all`;
+      `${pendingHint}`;
     await this.rawSend(mainJid, preview);
   }
 
@@ -220,8 +225,7 @@ export class SendApprovalGate {
           `*ID:* \`${row.id}\`\n` +
           `*To:* ${targetLabel}\n\n` +
           `${row.text}\n\n` +
-          `✅ \`approve ${row.id}\`\n` +
-          `❌ \`deny ${row.id}\`\n` +
+          `Reply *approve* or *deny* (include the ID if multiple pending)\n` +
           `📋 \`pending\` — list all`;
         await this.rawSend(mainJid, preview).catch(() => {});
       }
@@ -293,19 +297,52 @@ export class SendApprovalGate {
     }
 
 
-    const match = trimmed.match(APPROVAL_COMMAND_PATTERN);
-    if (!match) return false;
-
-    const [, action, rawId] = match;
-    const id = rawId.toLowerCase();
-    const pending = this.pending.get(id);
-
-    if (!pending) {
-      await this.rawSend(mainJid, `❓ No pending approval with ID \`${id}\`.`);
-      return true;
+    // Explicit "approve/מאשר <id>" or "deny/מסרב <id>" — resolve directly.
+    const exactMatch = trimmed.match(APPROVAL_COMMAND_PATTERN);
+    if (exactMatch) {
+      const [, action, rawId] = exactMatch;
+      const id = rawId.toLowerCase();
+      if (!this.pending.has(id)) {
+        await this.rawSend(mainJid, `❓ No pending approval with ID \`${id}\`.`);
+        return true;
+      }
+      const normalizedAction = APPROVE_WORDS.has(action.toLowerCase())
+        ? 'approve'
+        : 'deny';
+      return this._resolve(id, normalizedAction, mainJid);
     }
 
-    return this._resolve(id, action, mainJid);
+    // Bare "approve/מאשר" or "deny/מסרב" with no ID —
+    // safe only when exactly 1 approval is pending (auto-selects it).
+    const shorthand = trimmed.match(APPROVAL_SHORTHAND_PATTERN);
+    if (shorthand) {
+      if (this.pending.size === 0) {
+        await this.rawSend(mainJid, '📋 No pending approvals.');
+        return true;
+      }
+      if (this.pending.size > 1) {
+        const lines = [...this.pending.values()].map((p) => {
+          const name = this.getGroupName(p.targetJid);
+          const label =
+            name === p.targetJid
+              ? shortJid(p.targetJid)
+              : `${name} (${shortJid(p.targetJid)})`;
+          return `• \`${p.id}\` → ${label}`;
+        });
+        await this.rawSend(
+          mainJid,
+          `📋 Multiple pending — specify ID:\n${lines.join('\n')}`,
+        );
+        return true;
+      }
+      const [id] = this.pending.keys();
+      const normalizedAction = APPROVE_WORDS.has(shorthand[1].toLowerCase())
+        ? 'approve'
+        : 'deny';
+      return this._resolve(id, normalizedAction, mainJid);
+    }
+
+    return false;
   }
 
   private async _resolve(

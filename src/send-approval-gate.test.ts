@@ -236,6 +236,74 @@ describe('SendApprovalGate.handleCommand — source verification', () => {
   });
 });
 
+describe('SendApprovalGate — Hebrew and bare shorthand', () => {
+  it('מאשר <id> approves like "approve <id>"', async () => {
+    const { gate, sent } = makeGate();
+    await gate.send(OTHER_JID, 'test msg');
+    const id = extractId(sent[sent.length - 1].text);
+    sent.length = 0;
+
+    const handled = await gate.handleCommand(MAIN_JID, `מאשר ${id}`);
+    expect(handled).toBe(true);
+    expect(sent[0].jid).toBe(OTHER_JID);
+    expect(sent[0].text).toBe('test msg');
+    expect(sent[1].text).toContain('✅');
+  });
+
+  it('מסרב <id> denies like "deny <id>"', async () => {
+    const { gate, sent } = makeGate();
+    await gate.send(OTHER_JID, 'test msg');
+    const id = extractId(sent[sent.length - 1].text);
+    sent.length = 0;
+
+    const handled = await gate.handleCommand(MAIN_JID, `מסרב ${id}`);
+    expect(handled).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].jid).toBe(MAIN_JID);
+    expect(sent[0].text).toContain('❌');
+    expect(sent.every((s) => s.jid !== OTHER_JID)).toBe(true);
+  });
+
+  it('bare "מאשר" with 1 pending approves it automatically', async () => {
+    const { gate, sent } = makeGate();
+    await gate.send(OTHER_JID, 'solo message');
+    sent.length = 0;
+
+    const handled = await gate.handleCommand(MAIN_JID, 'מאשר');
+    expect(handled).toBe(true);
+    expect(sent[0].jid).toBe(OTHER_JID);
+    expect(sent[0].text).toBe('solo message');
+  });
+
+  it('bare "approve" with 1 pending approves it automatically', async () => {
+    const { gate, sent } = makeGate();
+    await gate.send(OTHER_JID, 'solo message');
+    sent.length = 0;
+
+    const handled = await gate.handleCommand(MAIN_JID, 'approve');
+    expect(handled).toBe(true);
+    expect(sent[0].jid).toBe(OTHER_JID);
+  });
+
+  it('bare "מאשר" with 0 pending responds gracefully', async () => {
+    const { gate, sent } = makeGate();
+    const handled = await gate.handleCommand(MAIN_JID, 'מאשר');
+    expect(handled).toBe(true);
+    expect(sent[0].text).toContain('No pending');
+  });
+
+  it('bare "מאשר" with multiple pending asks to specify ID', async () => {
+    const { gate, sent } = makeGate();
+    await gate.send(OTHER_JID, 'msg one');
+    await gate.send(PERSON_JID, 'msg two');
+    sent.length = 0;
+
+    const handled = await gate.handleCommand(MAIN_JID, 'מאשר');
+    expect(handled).toBe(true);
+    expect(sent[0].text).toContain('Multiple pending');
+  });
+});
+
 describe('SendApprovalGate — timeout expiry', () => {
   beforeEach(() => {
     vi.useFakeTimers();
